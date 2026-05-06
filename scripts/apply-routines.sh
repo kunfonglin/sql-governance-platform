@@ -83,8 +83,8 @@ if [[ -n "$MANIFEST_OUTPUT" && "$DRY_RUN" != "true" ]]; then
   DEPLOY_ID="$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID:-local}"
 
   # Build JSON array of deployed routines
-  printf -v ROUTINES_JSON '%s\n' "${DEPLOYED[@]}" \
-    | python3 -c "import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))"
+  ROUTINES_JSON=$(printf '%s\n' "${DEPLOYED[@]}" \
+    | python3 -c "import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))")
 
   cat > "$MANIFEST_OUTPUT" <<EOF
 {
