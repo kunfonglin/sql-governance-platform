@@ -1,0 +1,95 @@
+name: 'Dry-run Routines'
+description: 'Run bq query --dry_run on changed routines and enforce cost gate'
+
+inputs:
+  project_id:
+    description: 'Target GCP project for dry-run (usually test)'
+    required: true
+  cost_gate_max_bytes:
+    description: 'Max scanned bytes per routine (block PR if any exceed)'
+    required: false
+    default: '100000000000'  # 100 GB
+  bigquery_root:
+    description: 'Root directory'
+    required: false
+    default: 'bigquery'
+  base_ref:
+    description: 'Base ref to diff against'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine changed routines
+      id: changed
+      shell: bash
+      run: |
+        BASE="${{ inputs.base_ref }}"
+        if [[ -z "$BASE" ]]; then
+          BASE="${{ github.event.pull_request.base.sha }}"
+        fi
+        if [[ -z "$BASE" ]]; then
+          # fallback: diff from previous commit
+          BASE="HEAD~1"
+        fi
+
+        echo "Diffing against: $BASE"
+        # get changed .sql files under routines/
+        CHANGED=$(git diff --name-only "$BASE"...HEAD -- "${{ inputs.bigquery_root }}/*/routines/*.sql" || true)
+
+        if [[ -z "$CHANGED" ]]; then
+          echo "No routine changes detected."
+          echo "files=" >> "$GITHUB_OUTPUT"
+        else
+          # multiline output via heredoc
+          {
+            echo "files<<EOF"
+            echo "$CHANGED"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Dry-run each changed routine
+      if: steps.changed.outputs.files != ''
+      shell: bash
+      env:
+        FILES: ${{ steps.changed.outputs.files }}
+        MAX_BYTES: ${{ inputs.cost_gate_max_bytes }}
+        PROJECT: ${{ inputs.project_id }}
+      run: |
+        set -e
+        FAILED=0
+        BLOCKED_BY_COST=0
+        TOTAL_BYTES=0
+
+        while IFS= read -r f; do
+          [[ -z "$f" || ! -f "$f" ]] && continue
+          echo "▶ dry-run: $f"
+
+          # bq query --dry_run prints "Query successfully validated. Assuming the tables are not modified, running this query will process N bytes of data."
+          OUT=$(bq query --project_id="$PROJECT" --use_legacy_sql=false --dry_run < "$f" 2>&1) || {
+            echo "❌ dry-run failed:"
+            echo "$OUT"
+            FAILED=$((FAILED+1))
+            continue
+          }
+
+          # extract bytes
+          BYTES=$(echo "$OUT" | grep -oE 'process [0-9]+ bytes' | grep -oE '[0-9]+' | head -n1 || echo "0")
+          BYTES=${BYTES:-0}
+          TOTAL_BYTES=$((TOTAL_BYTES + BYTES))
+          echo "   bytes: $BYTES"
+
+          if (( BYTES > MAX_BYTES )); then
+            echo "❌ exceeds cost gate ($BYTES > $MAX_BYTES)"
+            BLOCKED_BY_COST=$((BLOCKED_BY_COST+1))
+          fi
+        done <<< "$FILES"
+
+        echo ""
+        echo "Summary: total bytes = $TOTAL_BYTES, failed = $FAILED, cost-blocked = $BLOCKED_BY_COST"
+
+        if (( FAILED > 0 || BLOCKED_BY_COST > 0 )); then
+          exit 1
+        fi

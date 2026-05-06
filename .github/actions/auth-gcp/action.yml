@@ -1,0 +1,29 @@
+name: 'Auth GCP via WIF'
+description: 'Authenticate to GCP using Workload Identity Federation (no SA key files)'
+
+inputs:
+  workload_identity_provider:
+    description: 'WIF provider full resource name'
+    required: true
+  service_account:
+    description: 'Service account email'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+
+    - uses: google-github-actions/setup-gcloud@v2
+      with:
+        install_components: 'bq'
+
+    - name: Verify auth
+      shell: bash
+      run: |
+        echo "Authenticated as: $(gcloud config get-value account 2>/dev/null)"
+        bq version

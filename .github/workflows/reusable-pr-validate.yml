@@ -1,0 +1,67 @@
+name: Reusable PR Validate
+
+on:
+  workflow_call:
+    inputs:
+      target_project:
+        description: 'GCP project for dry-run (usually test)'
+        required: true
+        type: string
+      cost_gate_max_bytes:
+        description: 'Cost gate threshold'
+        required: false
+        type: string
+        default: '100000000000'
+      bigquery_root:
+        description: 'Root dir for bigquery/'
+        required: false
+        type: string
+        default: 'bigquery'
+      platform_ref:
+        description: 'Ref of the platform repo to checkout'
+        required: false
+        type: string
+        default: 'v1.0'
+      platform_repo:
+        description: 'Owner/repo of the platform'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      WIF_PROVIDER:
+        required: true
+      DEPLOY_SA:
+        required: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout project repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout platform repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform_repo }}
+          ref: ${{ inputs.platform_ref }}
+          path: .platform
+
+      - name: Auth to GCP
+        uses: ./.platform/.github/actions/auth-gcp
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Dry-run changed routines
+        uses: ./.platform/.github/actions/dry-run-routines
+        with:
+          project_id: ${{ inputs.target_project }}
+          cost_gate_max_bytes: ${{ inputs.cost_gate_max_bytes }}
+          bigquery_root: ${{ inputs.bigquery_root }}

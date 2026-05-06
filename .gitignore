@@ -1,0 +1,34 @@
+# Poetry / venv
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local lineage DB（測試產出，不入 repo）
+*.db
+*.db-journal
+lineage.db
+
+# Editor
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# GCP service account keys（絕對不入 git）
+*-key.json
+*-credentials.json
+service-account*.json
+gcp-key*.json
+**/secrets/
+**/.gcp/
+.adc.json

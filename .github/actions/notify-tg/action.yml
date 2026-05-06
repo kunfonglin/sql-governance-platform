@@ -1,0 +1,35 @@
+name: 'Notify Telegram'
+description: 'Send a message to a Telegram chat via bot API'
+
+inputs:
+  bot_token:
+    description: 'Telegram bot token'
+    required: true
+  chat_id:
+    description: 'Target chat ID'
+    required: true
+  message:
+    description: 'Message to send (plain text recommended unless escaped)'
+    required: true
+  parse_mode:
+    description: 'MarkdownV2 / HTML / empty for plain'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Send TG message
+      shell: bash
+      env:
+        TG_BOT_TOKEN: ${{ inputs.bot_token }}
+        TG_CHAT_ID: ${{ inputs.chat_id }}
+      run: |
+        SCRIPT="${GITHUB_ACTION_PATH}/../../../scripts/notify-tg.sh"
+        chmod +x "$SCRIPT"
+
+        if [[ -n "${{ inputs.parse_mode }}" ]]; then
+          "$SCRIPT" --parse-mode "${{ inputs.parse_mode }}" --message "${{ inputs.message }}"
+        else
+          "$SCRIPT" --plain --message "${{ inputs.message }}"
+        fi

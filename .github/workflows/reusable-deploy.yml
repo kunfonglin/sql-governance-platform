@@ -1,0 +1,136 @@
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      project_id:
+        description: 'Target GCP project ID'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name (e.g. test or production)'
+        required: true
+        type: string
+      logical_project:
+        description: 'Logical project name for manifest'
+        required: false
+        type: string
+        default: 'unknown'
+      bigquery_root:
+        description: 'Root dir for bigquery/'
+        required: false
+        type: string
+        default: 'bigquery'
+      manifest_dir:
+        description: 'Directory for deploy manifests'
+        required: false
+        type: string
+        default: 'audit/deploys'
+      platform_ref:
+        description: 'Ref of the platform repo to checkout'
+        required: false
+        type: string
+        default: 'v1.0'
+      platform_repo:
+        description: 'Owner/repo of the platform'
+        required: false
+        type: string
+        default: ''
+      pr_url:
+        description: 'PR URL for manifest'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      WIF_PROVIDER:
+        required: true
+      DEPLOY_SA:
+        required: true
+      TG_BOT_TOKEN:
+        required: false
+      TG_CHAT_ID:
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Checkout project repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout platform repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform_repo }}
+          ref: ${{ inputs.platform_ref }}
+          path: .platform
+
+      - name: Auth to GCP
+        uses: ./.platform/.github/actions/auth-gcp
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Compute manifest path
+        id: manifest
+        shell: bash
+        run: |
+          DAY=$(date -u +%Y-%m-%d)
+          PATH_OUT="${{ inputs.manifest_dir }}/${DAY}-${GITHUB_RUN_ID}-manifest.json"
+          mkdir -p "${{ inputs.manifest_dir }}"
+          echo "path=$PATH_OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy routines + write manifest
+        uses: ./.platform/.github/actions/deploy-routines
+        with:
+          project_id: ${{ inputs.project_id }}
+          bigquery_root: ${{ inputs.bigquery_root }}
+          manifest_output: ${{ steps.manifest.outputs.path }}
+          logical_project: ${{ inputs.logical_project }}
+          platform_version: ${{ inputs.platform_ref }}
+          pr_url: ${{ inputs.pr_url }}
+          approved_by: ${{ github.actor }}
+
+      - name: Commit manifest
+        uses: ./.platform/.github/actions/write-manifest
+        with:
+          manifest_path: ${{ steps.manifest.outputs.path }}
+          commit_message: "chore(deploy): ${{ inputs.logical_project }} → ${{ inputs.project_id }} (${{ github.sha }})"
+
+      - name: Notify TG (success)
+        if: success() && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        uses: ./.platform/.github/actions/notify-tg
+        with:
+          bot_token: ${{ secrets.TG_BOT_TOKEN }}
+          chat_id: ${{ secrets.TG_CHAT_ID }}
+          message: |
+            ✅ Deploy success
+            project: ${{ inputs.logical_project }}
+            target : ${{ inputs.project_id }}
+            env    : ${{ inputs.environment }}
+            sha    : ${{ github.sha }}
+            run    : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Notify TG (failure)
+        if: failure() && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        uses: ./.platform/.github/actions/notify-tg
+        with:
+          bot_token: ${{ secrets.TG_BOT_TOKEN }}
+          chat_id: ${{ secrets.TG_CHAT_ID }}
+          message: |
+            ❌ Deploy FAILED
+            project: ${{ inputs.logical_project }}
+            target : ${{ inputs.project_id }}
+            env    : ${{ inputs.environment }}
+            run    : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

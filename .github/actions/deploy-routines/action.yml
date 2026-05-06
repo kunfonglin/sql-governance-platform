@@ -1,0 +1,57 @@
+name: 'Deploy Routines'
+description: 'Apply CREATE OR REPLACE for all bigquery/*/routines/*.sql in the project repo'
+
+inputs:
+  project_id:
+    description: 'Target GCP project ID'
+    required: true
+  bigquery_root:
+    description: 'Root directory of bigquery/ in the project repo'
+    required: false
+    default: 'bigquery'
+  manifest_output:
+    description: 'Path to write deploy manifest JSON (skip if empty)'
+    required: false
+    default: ''
+  logical_project:
+    description: 'Logical project name (for manifest)'
+    required: false
+    default: 'unknown'
+  platform_version:
+    description: 'Platform repo version (for manifest)'
+    required: false
+    default: 'unknown'
+  pr_url:
+    description: 'PR URL (for manifest)'
+    required: false
+    default: ''
+  approved_by:
+    description: 'Approver username (for manifest)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run apply-routines.sh
+      shell: bash
+      env:
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+      run: |
+        # apply-routines.sh comes from this composite action's repo (platform).
+        # Project repo gets it via the action checkout that uses: implies.
+        SCRIPT="${GITHUB_ACTION_PATH}/../../../scripts/apply-routines.sh"
+        chmod +x "$SCRIPT"
+
+        ARGS=(
+          --project "${{ inputs.project_id }}"
+          --root    "${{ inputs.bigquery_root }}"
+          --logical-project "${{ inputs.logical_project }}"
+          --platform-version "${{ inputs.platform_version }}"
+        )
+        [[ -n "${{ inputs.manifest_output }}" ]] && ARGS+=(--manifest-output "${{ inputs.manifest_output }}")
+        [[ -n "${{ inputs.pr_url }}" ]]          && ARGS+=(--pr-url "${{ inputs.pr_url }}")
+        [[ -n "${{ inputs.approved_by }}" ]]     && ARGS+=(--approved-by "${{ inputs.approved_by }}")
+
+        "$SCRIPT" "${ARGS[@]}"

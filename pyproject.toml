@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "sql-governance-platform"
+version = "1.0.0"
+description = "Shared tools for BigQuery SQL governance (Phase 1, SP-only)"
+authors = ["kunfonglin"]
+license = "Proprietary"
+readme = "README.md"
+
+# Phase 1 暫不打包成可發布套件 — 只用 Poetry 管 venv 與依賴。
+# 之後若要 publish 到內部 PyPI，把 package-mode 設為 true 並補 packages 設定。
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# Core deps（exporter / drift-detector / lineage-extract 都會用）
+pyyaml = "^6.0"
+
+# lineage-extract 專用（靜態 SQL 解析）
+sqlglot = "^25.0"
+
+[tool.poetry.group.dev.dependencies]
+# 之後寫測試 / lint 用
+pytest = "^8.0"
+pytest-cov = "^5.0"
+ruff = "^0.6"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]   # line too long — 長 SQL 字串難避免
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,41 @@
+name: 'Write Manifest'
+description: 'Stage and commit the deploy manifest into the project repo'
+
+inputs:
+  manifest_path:
+    description: 'Path of the manifest file produced by deploy-routines'
+    required: true
+  commit_message:
+    description: 'Commit message'
+    required: false
+    default: 'chore(deploy): add manifest'
+  branch:
+    description: 'Branch to push to'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Commit manifest
+      shell: bash
+      run: |
+        if [[ ! -f "${{ inputs.manifest_path }}" ]]; then
+          echo "Manifest not found at ${{ inputs.manifest_path }}, skipping commit"
+          exit 0
+        fi
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git add "${{ inputs.manifest_path }}"
+        if git diff --cached --quiet; then
+          echo "No manifest changes to commit"
+          exit 0
+        fi
+
+        git commit -m "${{ inputs.commit_message }}"
+
+        BRANCH="${{ inputs.branch }}"
+        [[ -z "$BRANCH" ]] && BRANCH="${GITHUB_REF##*/}"
+        git push origin "HEAD:$BRANCH"

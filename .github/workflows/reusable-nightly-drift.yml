@@ -1,0 +1,146 @@
+name: Reusable Nightly Drift
+
+on:
+  workflow_call:
+    inputs:
+      project_id:
+        description: 'GCP project to check (usually prod)'
+        required: true
+        type: string
+      region:
+        description: 'BQ region, e.g. asia-east1'
+        required: true
+        type: string
+      logical_project:
+        description: 'Logical project name'
+        required: false
+        type: string
+        default: 'unknown'
+      bigquery_root:
+        description: 'Root dir for bigquery/'
+        required: false
+        type: string
+        default: 'bigquery'
+      audit_dir:
+        description: 'Audit output dir'
+        required: false
+        type: string
+        default: 'audit'
+      config_path:
+        description: 'governance.yaml path'
+        required: false
+        type: string
+        default: 'config/.governance.yaml'
+      audit_lookback_hours:
+        description: 'How far back to look in audit log'
+        required: false
+        type: string
+        default: '36'
+      platform_ref:
+        description: 'Ref of the platform repo'
+        required: false
+        type: string
+        default: 'v1.0'
+      platform_repo:
+        description: 'Owner/repo of the platform'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      WIF_PROVIDER:
+        required: true
+      DEPLOY_SA:
+        required: true
+      TG_BOT_TOKEN:
+        required: false
+      TG_CHAT_ID:
+        required: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Checkout project repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout platform repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform_repo }}
+          ref: ${{ inputs.platform_ref }}
+          path: .platform
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        shell: bash
+        run: pip install pyyaml
+
+      - name: Auth to GCP
+        uses: ./.platform/.github/actions/auth-gcp
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Run drift detector
+        id: drift
+        shell: bash
+        continue-on-error: true
+        run: |
+          python .platform/scripts/drift-detector.py \
+            --project "${{ inputs.project_id }}" \
+            --region "${{ inputs.region }}" \
+            --git-root "${{ inputs.bigquery_root }}" \
+            --config "${{ inputs.config_path }}" \
+            --output "${{ inputs.audit_dir }}" \
+            --known-drifts "${{ inputs.audit_dir }}/known-drifts.yaml" \
+            --manifest-dir "${{ inputs.audit_dir }}/deploys" \
+            --audit-lookback-hours "${{ inputs.audit_lookback_hours }}"
+          EXIT=$?
+          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
+          # don't fail the step here; we want commit + TG to still run
+
+      - name: Commit drift report
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          DAY=$(date -u +%Y-%m-%d)
+          REPORT="${{ inputs.audit_dir }}/drift-${DAY}.md"
+          if [[ -f "$REPORT" ]]; then
+            git add "$REPORT"
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(drift): nightly report ${DAY} for ${{ inputs.logical_project }}"
+              git push origin "HEAD:${GITHUB_REF##*/}"
+            else
+              echo "no drift report changes"
+            fi
+          fi
+
+      - name: Notify TG on drift
+        if: steps.drift.outputs.exit_code != '0' && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        uses: ./.platform/.github/actions/notify-tg
+        with:
+          bot_token: ${{ secrets.TG_BOT_TOKEN }}
+          chat_id: ${{ secrets.TG_CHAT_ID }}
+          message: |
+            ⚠ Drift detected
+            project: ${{ inputs.logical_project }}
+            target : ${{ inputs.project_id }}
+            see audit/drift-$(date -u +%Y-%m-%d).md in repo
+
+      - name: Fail step if drift
+        if: steps.drift.outputs.exit_code != '0'
+        shell: bash
+        run: exit 1

@@ -1,0 +1,41 @@
+# config/.governance.yaml — 每個 project repo 各一份
+# 從 platform/templates/governance.yaml.tmpl 複製後填入
+
+version: 1
+
+# 專案邏輯名稱（會寫進 manifest，drift report 跨專案比對用）
+logical_project: __PROJECT_NAME__         # e.g. pilot / marketing / finance
+
+environments:
+  test:
+    project_id: __PROJECT_TEST__          # e.g. sandbox-test
+  prod:
+    project_id: __PROJECT_PROD__          # e.g. sandbox-prod
+
+# 共用 exclude 命名空間（未來會加 tables / views，先預留結構）
+exclude:
+  datasets:
+    - staging_temp
+    - _dataform_staging
+    - _script_scratch
+  routines:
+    # 每筆 entry: pattern + reason + review_by + owner
+    # - pattern: "*.sp_migrate_sqlserver_*"
+    #   reason: "SQL Server 遷移歷史搬移工具，待評估保留或刪除"
+    #   review_by: "2026-09-30"
+    #   owner: "lin"
+
+drift_check:
+  schedule: "0 3 * * *"
+  scope:
+    - routines
+  notify: telegram
+  ignore_known: true
+
+cost_gate:
+  pr_validate_max_bytes: 100000000000     # 100 GB
+
+# 平台版本鎖定（變更時走小範圍升級流程）
+platform:
+  ref: v1.0
+  repo: __PLATFORM_OWNER__/sql-governance-platform

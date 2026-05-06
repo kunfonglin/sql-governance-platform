@@ -1,0 +1,20 @@
+# PR Description
+
+## 變更原因
+<!-- 為什麼要做這個變更？業務需求 / bug fix / 重構 -->
+
+## 影響範圍
+<!-- 動了哪些 SP / function？影響哪些下游？ -->
+
+## Checklist
+
+- [ ] 檔案路徑正確：`bigquery/{dataset}/routines/{name}.sql`
+- [ ] SP / FN 用 `CREATE OR REPLACE`（冪等）
+- [ ] 沒寫 project id（跨專案有加 `-- cross-project:` header）
+- [ ] 全 Standard SQL
+- [ ] 已在自己的 BQ Studio workspace 點「執行」驗證過
+
+## 是否需要人工介入
+<!-- Phase 1 SP-only 通常不需要。若有以下任一，請說明： -->
+- [ ] 涉及大量資料計算（會造成 cost gate 觸發?）
+- [ ] 牽動 SP 之間的依賴鏈（CALL 順序）
