@@ -30,7 +30,17 @@ on:
         description: 'Ref of the platform repo to checkout'
         required: false
         type: string
-        default: 'v1.0'
+        default: 'v1.1'
+      migrations_root:
+        description: 'Root dir for migrations/'
+        required: false
+        type: string
+        default: 'migrations'
+      ledger_dataset:
+        description: 'Dataset where migrations_applied ledger lives'
+        required: false
+        type: string
+        default: 'governance_audit'
       platform_repo:
         description: 'Owner/repo of the platform'
         required: false
@@ -97,6 +107,38 @@ jobs:
           platform_version: ${{ inputs.platform_ref }}
           pr_url: ${{ inputs.pr_url }}
           approved_by: ${{ github.actor }}
+
+      - name: Apply migrations
+        id: migrations
+        uses: ./.platform/.github/actions/apply-migrations
+        with:
+          project_id: ${{ inputs.project_id }}
+          migrations_root: ${{ inputs.migrations_root }}
+          ledger_dataset: ${{ inputs.ledger_dataset }}
+
+      - name: Patch manifest with migrations_applied
+        if: success()
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
+          APPLIED_JSON: ${{ steps.migrations.outputs.applied_json }}
+        run: |
+          if [[ ! -f "$MANIFEST_PATH" ]]; then
+            echo "Manifest not found at $MANIFEST_PATH, skipping patch"
+            exit 0
+          fi
+          # 用 python 把 deployed.migrations_applied 改成真實值
+          python3 - <<'PY'
+          import json, os
+          path = os.environ['MANIFEST_PATH']
+          applied = json.loads(os.environ.get('APPLIED_JSON','[]') or '[]')
+          with open(path) as f:
+              m = json.load(f)
+          m.setdefault('deployed', {})['migrations_applied'] = applied
+          with open(path, 'w') as f:
+              json.dump(m, f, indent=2)
+          print(f"Patched manifest: {len(applied)} migrations_applied")
+          PY
 
       - name: Commit manifest
         uses: ./.platform/.github/actions/write-manifest

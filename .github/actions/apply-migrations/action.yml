@@ -1,0 +1,63 @@
+name: 'Apply Migrations'
+description: 'Apply pending SQL migrations from migrations/ directory using Phase 1 simplified ledger'
+
+inputs:
+  project_id:
+    description: 'Target GCP project ID'
+    required: true
+  migrations_root:
+    description: 'Root directory containing migration .sql files'
+    required: false
+    default: 'migrations'
+  ledger_dataset:
+    description: 'Dataset where migrations_applied ledger lives'
+    required: false
+    default: 'governance_audit'
+  ledger_table:
+    description: 'Ledger table name'
+    required: false
+    default: 'migrations_applied'
+  dry_run:
+    description: 'If true, just dry-run (no actual SQL or ledger write)'
+    required: false
+    default: 'false'
+
+outputs:
+  applied_json:
+    description: 'JSON array of migration IDs applied this run'
+    value: ${{ steps.apply.outputs.applied_json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run apply-migrations.sh
+      id: apply
+      shell: bash
+      env:
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+      run: |
+        SCRIPT="${GITHUB_ACTION_PATH}/../../../scripts/apply-migrations.sh"
+        chmod +x "$SCRIPT"
+
+        ARGS=(
+          --project "${{ inputs.project_id }}"
+          --root    "${{ inputs.migrations_root }}"
+          --ledger-dataset "${{ inputs.ledger_dataset }}"
+          --ledger-table   "${{ inputs.ledger_table }}"
+        )
+        [[ "${{ inputs.dry_run }}" == "true" ]] && ARGS+=(--dry-run)
+
+        "$SCRIPT" "${ARGS[@]}"
+
+        # 把 /tmp/migrations_applied.json 內容傳成 step output（給 manifest step 合併用）
+        if [[ -f /tmp/migrations_applied.json ]]; then
+          # GitHub Actions multiline output: 用 EOF heredoc 寫法
+          {
+            echo "applied_json<<EOF"
+            cat /tmp/migrations_applied.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        else
+          echo 'applied_json=[]' >> "$GITHUB_OUTPUT"
+        fi

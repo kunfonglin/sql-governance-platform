@@ -1,6 +1,8 @@
 # SQL 撰寫規範（Phase 1, SP-only）
 
-> 適用於所有 sql-governance-* project repo。Phase 1 範圍：Stored Procedure / Function。Tables / Views / Migrations 屬未來擴充。
+> 適用於所有 sql-governance-* project repo。
+> Phase 1 範圍：Stored Procedure / Function（含 DROP migration）。Tables / Views 屬未來擴充。
+> Platform 版本：v1.1+（含兩階段部署 + migration 機制）
 
 ---
 
@@ -68,6 +70,39 @@ END;
 全部用 Standard SQL。**禁用 Legacy SQL**。
 
 `bq query --use_legacy_sql=false` 由 CI 統一控制；別在 SQL 裡放 `#legacySQL` directive。
+
+---
+
+## 規則 5：strict_mode 用法（v1.1 後簡化）
+
+| 情境 | 加 `OPTIONS(strict_mode=false)`? |
+|---|---|
+| 一般 SP（INSERT / UPDATE / MERGE / DELETE） | ❌ 不加 |
+| **Orchestrator（body 含 `CALL another_sp`）** | ❌ **不加**（v1.1 兩階段部署自動解依賴） |
+| **Dynamic SQL（body 含 `EXECUTE IMMEDIATE`）** | ✅ **必須加**（runtime 才知道引用的 table）|
+| 引用 prod 必有但部署時暫缺的 table | ❌ 不加（先建表）|
+
+**簡化版規則**：「**只有 EXECUTE IMMEDIATE 才需要 `OPTIONS(strict_mode=false)`**」。
+
+---
+
+## 規則 6：刪除 SP 走 Migration
+
+**不能透過「刪檔」直接讓 prod 跟著刪 SP**。Phase 1 v1.1 起：
+
+1. 在 `bigquery/{dataset}/routines/` 把對應 .sql 刪掉
+2. 同 PR 加一個 migration: `migrations/YYYY-MM-DD-HHMM-drop-{name}.sql`
+   ```sql
+   -- migrations/2026-05-07-1400-drop-sp-hello-world.sql
+   -- 對應 git 變更: bigquery/analytics/routines/sp_hello_world.sql 被刪除
+   -- 操作: DROP SP（test + prod 都會跑）
+   -- 備註: 為什麼要刪
+   DROP PROCEDURE IF EXISTS `analytics.sp_hello_world`;
+   ```
+3. PR review + merge
+4. CI 自動跑：apply-routines（少一個 SP）→ apply-migrations（DROP 跑掉）
+
+> 為什麼不自動「git 沒就 DROP」：避免 commit 失誤就 wipe prod。明確的 migration 留 audit trail。
 
 ---
 
