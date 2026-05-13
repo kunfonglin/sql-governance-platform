@@ -125,6 +125,22 @@ def get_excludes(cfg: dict) -> tuple[set[str], list[str]]:
 
 # ---------- BQ queries ----------
 
+def _parse_bq_json(stdout: str) -> list:
+    # bq CLI 在 non-TTY 環境（Actions）可能在 JSON 前面印狀態列，
+    # 用 find('[') 跳到真正的 JSON 起點，避免 JSONDecodeError。
+    if not stdout.strip():
+        return []
+    start = stdout.find("[")
+    if start < 0:
+        print(f"WARN: bq stdout has no JSON array, got:\n{stdout[:500]}", file=sys.stderr)
+        return []
+    try:
+        return json.loads(stdout[start:])
+    except json.JSONDecodeError as e:
+        print(f"ERROR: failed to parse bq JSON: {e}\nstdout (first 500): {stdout[:500]}", file=sys.stderr)
+        sys.exit(2)
+
+
 def fetch_live_routines(project: str, region: str, exclude_datasets: set[str]) -> list[LiveRoutine]:
     sql = f"""
     SELECT
@@ -136,14 +152,14 @@ def fetch_live_routines(project: str, region: str, exclude_datasets: set[str]) -
     WHERE specific_catalog = '{project}'
     """
     result = subprocess.run(
-        ["bq", "query", f"--project_id={project}", "--use_legacy_sql=false",
+        ["bq", "--quiet", "query", f"--project_id={project}", "--use_legacy_sql=false",
          "--format=json", "--max_rows=10000", sql],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         print(f"ERROR: bq query failed:\n{result.stderr}", file=sys.stderr)
         sys.exit(2)
-    rows = json.loads(result.stdout) if result.stdout.strip() else []
+    rows = _parse_bq_json(result.stdout)
     out: list[LiveRoutine] = []
     for r in rows:
         if r["schema"] in exclude_datasets:
@@ -178,14 +194,14 @@ def fetch_recent_modifiers(project: str, region: str, hours: int) -> dict[str, d
     QUALIFY ROW_NUMBER() OVER (PARTITION BY routine_fullname ORDER BY creation_time DESC) = 1
     """
     result = subprocess.run(
-        ["bq", "query", f"--project_id={project}", "--use_legacy_sql=false",
+        ["bq", "--quiet", "query", f"--project_id={project}", "--use_legacy_sql=false",
          "--format=json", "--max_rows=10000", sql],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         print(f"WARN: audit-log query failed:\n{result.stderr}", file=sys.stderr)
         return {}
-    rows = json.loads(result.stdout) if result.stdout.strip() else []
+    rows = _parse_bq_json(result.stdout)
     return {r["routine_fullname"]: {"user_email": r["user_email"], "creation_time": r["creation_time"]} for r in rows}
 
 
