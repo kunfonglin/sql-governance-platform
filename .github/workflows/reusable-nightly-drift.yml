@@ -99,6 +99,7 @@ jobs:
         shell: bash
         continue-on-error: true
         run: |
+          # 用 &&...||... 模式捕捉 exit code，避免 set -e 在 python 失敗時讓後面那行 echo 跑不到
           python .platform/scripts/drift-detector.py \
             --project "${{ inputs.project_id }}" \
             --region "${{ inputs.region }}" \
@@ -107,8 +108,8 @@ jobs:
             --output "${{ inputs.audit_dir }}" \
             --known-drifts "${{ inputs.audit_dir }}/known-drifts.yaml" \
             --manifest-dir "${{ inputs.audit_dir }}/deploys" \
-            --audit-lookback-hours "${{ inputs.audit_lookback_hours }}"
-          EXIT=$?
+            --audit-lookback-hours "${{ inputs.audit_lookback_hours }}" \
+            && EXIT=0 || EXIT=$?
           echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
           # don't fail the step here; we want commit + TG to still run
 
@@ -130,9 +131,7 @@ jobs:
           fi
 
       - name: Notify TG on drift
-        if: steps.drift.outputs.exit_code != '0' && env.TG_BOT_TOKEN != ''
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        if: always() && steps.drift.outputs.exit_code != '0' && env.TG_BOT_TOKEN != ''
         uses: ./.platform/.github/actions/notify-tg
         with:
           bot_token: ${{ secrets.TG_BOT_TOKEN }}
@@ -144,6 +143,6 @@ jobs:
             see audit/drift-$(date -u +%Y-%m-%d).md in repo
 
       - name: Fail step if drift
-        if: steps.drift.outputs.exit_code != '0'
+        if: always() && steps.drift.outputs.exit_code != '0'
         shell: bash
         run: exit 1

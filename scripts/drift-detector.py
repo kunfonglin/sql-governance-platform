@@ -318,7 +318,18 @@ def compute_drift(
         live_norm = normalize_for_compare(by_name_live[fullname].ddl, project)
         git_norm = normalize_for_compare(by_name_git[fullname].ddl, project)
         if live_norm != git_norm:
-            preview = f"live ({len(live_norm)} chars) ≠ git ({len(git_norm)} chars)"
+            # find first divergence position for debug
+            mismatch_at = next(
+                (i for i in range(min(len(live_norm), len(git_norm))) if live_norm[i] != git_norm[i]),
+                min(len(live_norm), len(git_norm)),
+            )
+            window_start = max(0, mismatch_at - 30)
+            window_end = mismatch_at + 60
+            preview = (
+                f"first diff @{mismatch_at}: "
+                f"LIVE='...{live_norm[window_start:window_end]}...' | "
+                f"GIT='...{git_norm[window_start:window_end]}...'"
+            )
             drifts.append(Drift(
                 kind="content",
                 fullname=fullname,
@@ -384,6 +395,13 @@ def render_report(report: Report) -> str:
                 f"{d.last_modified_at or '-'} | {'yes' if d.in_recent_manifest else 'no'} | {d.detail} |"
             )
         lines.append("")
+
+        # diff previews (for content drifts)
+        content_drifts = [d for d in report.drifts if d.kind == "content" and d.diff_preview]
+        if content_drifts:
+            lines += ["## Content diff previews", ""]
+            for d in content_drifts:
+                lines += [f"### `{d.fullname}`", "```", d.diff_preview, "```", ""]
 
     if report.known_drifts_filtered:
         lines += [
