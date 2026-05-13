@@ -235,20 +235,21 @@ _UNQUOTED_FULL_REF_RE = re.compile(r"(?<![\w`])([\w-]+)\.([\w-]+)\.([\w-]+)(?![\
 def normalize_for_compare(ddl: str, source_project: str | None = None) -> str:
     """
     Normalize a DDL string for diff comparison:
-      1. Strip leading -- header comment lines (file metadata)
-      2. Strip same-project project_id from refs
-      3. Collapse whitespace
+      1. Strip ALL -- line comments (header AND in-body)
+      2. Normalize 'CREATE OR REPLACE' → 'CREATE' (BQ INFORMATION_SCHEMA 會把 OR REPLACE 拿掉)
+      3. Strip same-project project_id from refs
+      4. Collapse whitespace
+      5. Lowercase for case-insensitive compare
     """
     text = ddl
 
-    # Strip metadata header lines at file start (consecutive -- lines from beginning)
-    lines = text.splitlines(keepends=True)
-    i = 0
-    while i < len(lines) and (lines[i].lstrip().startswith("--") or not lines[i].strip()):
-        i += 1
-    text = "".join(lines[i:])
+    # 1. Strip all -- line comments (whole-line OR trailing comments anywhere)
+    text = re.sub(r"--[^\n]*", "", text)
 
-    # Strip project_id from same-project refs (so prod's `proj.ds.obj` matches git's `ds.obj`)
+    # 2. Normalize CREATE OR REPLACE → CREATE
+    text = re.sub(r"\bCREATE\s+OR\s+REPLACE\b", "CREATE", text, flags=re.IGNORECASE)
+
+    # 3. Strip project_id from same-project refs (so prod's `proj.ds.obj` matches git's `ds.obj`)
     if source_project:
         def _strip_quoted(m: re.Match) -> str:
             return f"`{m.group(2)}.{m.group(3)}`" if m.group(1) == source_project else m.group(0)
@@ -259,11 +260,12 @@ def normalize_for_compare(ddl: str, source_project: str | None = None) -> str:
         text = _BACKTICK_FULL_REF_RE.sub(_strip_quoted, text)
         text = _UNQUOTED_FULL_REF_RE.sub(_strip_unquoted, text)
 
-    # Collapse whitespace
+    # 4. Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
     # Remove trailing semicolons for stable comparison
     text = text.rstrip(";").strip()
-    return text
+    # 5. Lowercase
+    return text.lower()
 
 
 # ---------- Diff logic ----------
