@@ -492,6 +492,7 @@ def main() -> int:
         summary_path.write_text("\n".join(lines), encoding="utf-8")
     else:
         summary_path.write_text("", encoding="utf-8")
+    print(f"Wrote summary {summary_path} ({summary_path.stat().st_size} bytes)")
 
     if real_drifts:
         print(f"⚠  {len(real_drifts)} unknown drift(s) — see {out_path}")
