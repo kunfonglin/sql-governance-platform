@@ -136,23 +136,14 @@ jobs:
         shell: bash
         run: |
           SUMMARY_PATH="${{ inputs.audit_dir }}/drift-summary.txt"
-          echo "DEBUG: pwd=$(pwd)"
-          echo "DEBUG: looking for $SUMMARY_PATH"
-          echo "DEBUG: ls of audit dir:"
-          ls -la "${{ inputs.audit_dir }}/" 2>&1 || echo "audit dir missing"
           if [[ -f "$SUMMARY_PATH" ]]; then
-            echo "DEBUG: file found, size=$(wc -c < "$SUMMARY_PATH") bytes"
-            echo "DEBUG: content:"
-            cat "$SUMMARY_PATH"
-            echo "----"
             {
               echo "body<<DRIFT_EOF"
               cat "$SUMMARY_PATH"
+              # 補一行空白防止 summary 沒有 trailing newline 導致 delimiter 黏在最後一行
+              echo ""
               echo "DRIFT_EOF"
             } >> "$GITHUB_OUTPUT"
-            echo "DEBUG: wrote to GITHUB_OUTPUT"
-          else
-            echo "DEBUG: file NOT found"
           fi
 
       - name: Notify TG on drift

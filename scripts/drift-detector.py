@@ -228,7 +228,11 @@ def load_git_routines(git_root: Path) -> list[GitRoutine]:
 # ---------- Normalization ----------
 
 _HEADER_COMMENT_RE = re.compile(r"^\s*--[^\n]*\n", re.MULTILINE)
+# `proj.ds.obj`  → 三段全部一起 backticked
 _BACKTICK_FULL_REF_RE = re.compile(r"`([\w-]+)\.([\w-]+)\.([\w-]+)`")
+# `proj`.ds.obj  → BQ INFORMATION_SCHEMA 用的格式（project 單獨 backticked）
+_SPLIT_BACKTICK_REF_RE = re.compile(r"`([\w-]+)`\.([\w-]+)\.([\w-]+)")
+# proj.ds.obj    → 完全沒 backtick
 _UNQUOTED_FULL_REF_RE = re.compile(r"(?<![\w`])([\w-]+)\.([\w-]+)\.([\w-]+)(?![\w`])")
 
 
@@ -249,15 +253,21 @@ def normalize_for_compare(ddl: str, source_project: str | None = None) -> str:
     # 2. Normalize CREATE OR REPLACE → CREATE
     text = re.sub(r"\bCREATE\s+OR\s+REPLACE\b", "CREATE", text, flags=re.IGNORECASE)
 
-    # 3. Strip project_id from same-project refs (so prod's `proj.ds.obj` matches git's `ds.obj`)
+    # 3. Strip project_id from same-project refs
+    #    BQ 對外吐 DDL 時用 `proj`.ds.obj，git 寫的是 `ds.obj`，要把 project 那段拿掉並讓兩邊 backtick 風格一致
     if source_project:
         def _strip_quoted(m: re.Match) -> str:
+            return f"`{m.group(2)}.{m.group(3)}`" if m.group(1) == source_project else m.group(0)
+
+        def _strip_split(m: re.Match) -> str:
+            # `proj`.ds.obj → `ds.obj`（轉成 git 慣用的合併 backtick 形式）
             return f"`{m.group(2)}.{m.group(3)}`" if m.group(1) == source_project else m.group(0)
 
         def _strip_unquoted(m: re.Match) -> str:
             return f"{m.group(2)}.{m.group(3)}" if m.group(1) == source_project else m.group(0)
 
         text = _BACKTICK_FULL_REF_RE.sub(_strip_quoted, text)
+        text = _SPLIT_BACKTICK_REF_RE.sub(_strip_split, text)
         text = _UNQUOTED_FULL_REF_RE.sub(_strip_unquoted, text)
 
     # 4. Collapse whitespace
@@ -482,6 +492,7 @@ def main() -> int:
     print(f"Wrote {out_path}")
 
     # 寫 summary 給 TG / 通知用（不進 git，只在 runner 本地）
+    # 最後要有 trailing newline，否則 shell heredoc delimiter 會貼在最後一行末尾、GitHub 找不到
     summary_path = output_dir / "drift-summary.txt"
     if real_drifts:
         lines = []
@@ -489,7 +500,7 @@ def main() -> int:
             lines.append(f"- [{d.kind}] {d.fullname}")
         if len(real_drifts) > 25:
             lines.append(f"... and {len(real_drifts) - 25} more")
-        summary_path.write_text("\n".join(lines), encoding="utf-8")
+        summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     else:
         summary_path.write_text("", encoding="utf-8")
     print(f"Wrote summary {summary_path} ({summary_path.stat().st_size} bytes)")
