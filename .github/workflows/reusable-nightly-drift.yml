@@ -130,6 +130,20 @@ jobs:
             fi
           fi
 
+      - name: Read drift summary
+        id: summary
+        if: always() && steps.drift.outputs.exit_code != '0'
+        shell: bash
+        run: |
+          SUMMARY_PATH="${{ inputs.audit_dir }}/drift-summary.txt"
+          if [[ -f "$SUMMARY_PATH" ]]; then
+            {
+              echo "body<<DRIFT_EOF"
+              cat "$SUMMARY_PATH"
+              echo "DRIFT_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Notify TG on drift
         if: always() && steps.drift.outputs.exit_code != '0' && env.TG_BOT_TOKEN != ''
         uses: ./.platform/.github/actions/notify-tg
@@ -140,6 +154,10 @@ jobs:
             ⚠ Drift detected
             project: ${{ inputs.logical_project }}
             target : ${{ inputs.project_id }}
+
+            Affected routines:
+            ${{ steps.summary.outputs.body }}
+
             see audit/drift-$(date -u +%Y-%m-%d).md in repo
 
       - name: Fail step if drift

@@ -481,6 +481,18 @@ def main() -> int:
     out_path.write_text(render_report(report), encoding="utf-8")
     print(f"Wrote {out_path}")
 
+    # 寫 summary 給 TG / 通知用（不進 git，只在 runner 本地）
+    summary_path = output_dir / "drift-summary.txt"
+    if real_drifts:
+        lines = []
+        for d in real_drifts[:25]:  # 上限 25 條避免 TG 訊息爆字數
+            lines.append(f"- [{d.kind}] {d.fullname}")
+        if len(real_drifts) > 25:
+            lines.append(f"... and {len(real_drifts) - 25} more")
+        summary_path.write_text("\n".join(lines), encoding="utf-8")
+    else:
+        summary_path.write_text("", encoding="utf-8")
+
     if real_drifts:
         print(f"⚠  {len(real_drifts)} unknown drift(s) — see {out_path}")
         return 1  # signal CI / TG
