@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: 'bigquery'
+      forbidden_project_ids:
+        description: 'Space-separated own-env project ids to forbid in SQL (pre-deploy gate). Empty = skip.'
+        required: false
+        type: string
+        default: ''
       manifest_dir:
         description: 'Directory for deploy manifests'
         required: false
@@ -84,6 +89,13 @@ jobs:
           repository: ${{ inputs.platform_repo }}
           ref: ${{ inputs.platform_ref }}
           path: .platform
+
+      - name: Project-id lint (gate BEFORE deploy)
+        shell: bash
+        run: |
+          # 擋「硬寫自家 project id」——即使是直接 push（沒走 PR）也會在這裡被擋下、不會部署
+          python3 .platform/scripts/project-id-lint.py \
+            "${{ inputs.bigquery_root }}" ${{ inputs.forbidden_project_ids }}
 
       - name: Auth to GCP
         uses: ./.platform/.github/actions/auth-gcp
