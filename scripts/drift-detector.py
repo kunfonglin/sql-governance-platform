@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import json
 import re
 import subprocess
@@ -278,6 +279,35 @@ def normalize_for_compare(ddl: str, source_project: str | None = None) -> str:
     return text.lower()
 
 
+def normalize_for_display(ddl: str, source_project: str | None = None) -> list[str]:
+    """
+    給「人看」用的輕度正規化（保留大小寫與換行）：
+      - 移除 -- 註解、CREATE OR REPLACE → CREATE、去掉同專案 project id
+      - 每行壓掉多餘空白、去空行
+    回傳 list[str] 供 difflib.unified_diff 使用。
+    """
+    text = ddl
+    text = re.sub(r"--[^\n]*", "", text)
+    text = re.sub(r"\bCREATE\s+OR\s+REPLACE\b", "CREATE", text, flags=re.IGNORECASE)
+    if source_project:
+        def _q(m: re.Match) -> str:
+            return f"`{m.group(2)}.{m.group(3)}`" if m.group(1) == source_project else m.group(0)
+
+        def _u(m: re.Match) -> str:
+            return f"{m.group(2)}.{m.group(3)}" if m.group(1) == source_project else m.group(0)
+
+        text = _BACKTICK_FULL_REF_RE.sub(_q, text)
+        text = _SPLIT_BACKTICK_REF_RE.sub(_q, text)
+        text = _UNQUOTED_FULL_REF_RE.sub(_u, text)
+
+    out: list[str] = []
+    for ln in text.splitlines():
+        ln = re.sub(r"[ \t]+", " ", ln).rstrip()
+        if ln.strip():
+            out.append(ln)
+    return out
+
+
 # ---------- Diff logic ----------
 
 def is_known(fullname: str, known_drifts: list[dict]) -> tuple[bool, str | None]:
@@ -328,18 +358,16 @@ def compute_drift(
         live_norm = normalize_for_compare(by_name_live[fullname].ddl, project)
         git_norm = normalize_for_compare(by_name_git[fullname].ddl, project)
         if live_norm != git_norm:
-            # find first divergence position for debug
-            mismatch_at = next(
-                (i for i in range(min(len(live_norm), len(git_norm))) if live_norm[i] != git_norm[i]),
-                min(len(live_norm), len(git_norm)),
-            )
-            window_start = max(0, mismatch_at - 30)
-            window_end = mismatch_at + 60
-            preview = (
-                f"first diff @{mismatch_at}: "
-                f"LIVE='...{live_norm[window_start:window_end]}...' | "
-                f"GIT='...{git_norm[window_start:window_end]}...'"
-            )
+            # 用 unified diff 呈現「改了哪幾行」（保留大小寫與換行，較好讀）
+            git_lines = normalize_for_display(by_name_git[fullname].ddl, project)
+            live_lines = normalize_for_display(by_name_live[fullname].ddl, project)
+            diff_lines = list(difflib.unified_diff(
+                git_lines, live_lines,
+                fromfile="GIT", tofile="LIVE(prod)", lineterm="",
+            ))
+            if len(diff_lines) > 80:
+                diff_lines = diff_lines[:80] + [f"... ({len(diff_lines) - 80} more diff lines truncated)"]
+            preview = "\n".join(diff_lines)
             drifts.append(Drift(
                 kind="content",
                 fullname=fullname,
@@ -411,7 +439,7 @@ def render_report(report: Report) -> str:
         if content_drifts:
             lines += ["## Content diff previews", ""]
             for d in content_drifts:
-                lines += [f"### `{d.fullname}`", "```", d.diff_preview, "```", ""]
+                lines += [f"### `{d.fullname}`", "```diff", d.diff_preview, "```", ""]
 
     if report.known_drifts_filtered:
         lines += [
