@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: 'bigquery'
+      forbidden_project_ids:
+        description: 'Space-separated own-env project ids to forbid in SQL (e.g. prod + test ids). Empty = skip lint.'
+        required: false
+        type: string
+        default: ''
       platform_ref:
         description: 'Ref of the platform repo to checkout'
         required: false
@@ -52,6 +57,12 @@ jobs:
           repository: ${{ inputs.platform_repo }}
           ref: ${{ inputs.platform_ref }}
           path: .platform
+
+      - name: Project-id lint (no GCP needed)
+        shell: bash
+        run: |
+          python3 .platform/scripts/project-id-lint.py \
+            "${{ inputs.bigquery_root }}" ${{ inputs.forbidden_project_ids }}
 
       - name: Auth to GCP
         uses: ./.platform/.github/actions/auth-gcp

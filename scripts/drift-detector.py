@@ -254,21 +254,15 @@ def normalize_for_compare(ddl: str, source_project: str | None = None) -> str:
     # 2. Normalize CREATE OR REPLACE → CREATE
     text = re.sub(r"\bCREATE\s+OR\s+REPLACE\b", "CREATE", text, flags=re.IGNORECASE)
 
-    # 3. Strip project_id from same-project refs
-    #    BQ 對外吐 DDL 時用 `proj`.ds.obj，git 寫的是 `ds.obj`，要把 project 那段拿掉並讓兩邊 backtick 風格一致
+    # 3. 統一移除所有 backtick，讓 `proj`.ds.obj / `proj.ds.obj` / `proj`.`ds`.`obj` 等寫法一致
+    #    （否則跨專案引用會因 git 與 BQ 的 backtick 風格不同而誤報 drift — 見 #16）
+    text = text.replace("`", "")
+
+    # 4. 去掉「同專案」的 project id（backtick 已移除，只剩 unquoted 形式）；跨專案引用保留不動
     if source_project:
-        def _strip_quoted(m: re.Match) -> str:
-            return f"`{m.group(2)}.{m.group(3)}`" if m.group(1) == source_project else m.group(0)
-
-        def _strip_split(m: re.Match) -> str:
-            # `proj`.ds.obj → `ds.obj`（轉成 git 慣用的合併 backtick 形式）
-            return f"`{m.group(2)}.{m.group(3)}`" if m.group(1) == source_project else m.group(0)
-
         def _strip_unquoted(m: re.Match) -> str:
             return f"{m.group(2)}.{m.group(3)}" if m.group(1) == source_project else m.group(0)
 
-        text = _BACKTICK_FULL_REF_RE.sub(_strip_quoted, text)
-        text = _SPLIT_BACKTICK_REF_RE.sub(_strip_split, text)
         text = _UNQUOTED_FULL_REF_RE.sub(_strip_unquoted, text)
 
     # 4. Collapse whitespace
