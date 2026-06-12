@@ -40,11 +40,71 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
+# Windows console UTF-8 (avoid cp950 crash on ✓ ⚠)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+
 try:
     import yaml  # type: ignore
 except ImportError:
     print("ERROR: PyYAML not installed. Run: pip install pyyaml", file=sys.stderr)
     sys.exit(1)
+
+
+_BQ_PATH_CACHE: str | None = None
+
+
+def _bq_path() -> str:
+    """Locate bq CLI: PATH first, then common Windows install locations."""
+    global _BQ_PATH_CACHE
+    if _BQ_PATH_CACHE:
+        return _BQ_PATH_CACHE
+    import shutil
+    for cand in ("bq", "bq.cmd"):
+        found = shutil.which(cand)
+        if found:
+            _BQ_PATH_CACHE = found
+            return found
+    candidates = [
+        Path.home() / "AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/bq.cmd",
+        Path("C:/Program Files (x86)/Google/Cloud SDK/google-cloud-sdk/bin/bq.cmd"),
+        Path("C:/Program Files/Google/Cloud SDK/google-cloud-sdk/bin/bq.cmd"),
+    ]
+    for p in candidates:
+        if p.exists():
+            _BQ_PATH_CACHE = str(p)
+            return _BQ_PATH_CACHE
+    raise FileNotFoundError("bq CLI not found. Install Google Cloud SDK or add bin/ to PATH.")
+
+
+def _run_bq_json(project_id: str, sql: str) -> list[dict]:
+    """Run a bq query and parse JSON output. Handles Windows .cmd quirks (multi-line SQL, errors on stdout)."""
+    sql_single_line = " ".join(sql.split())
+    result = subprocess.run(
+        [_bq_path(), "--quiet", "query",
+         f"--project_id={project_id}",
+         "--use_legacy_sql=false",
+         "--format=json",
+         "--max_rows=10000",
+         sql_single_line],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"ERROR: bq query failed (rc={result.returncode})", file=sys.stderr)
+        if result.stderr:
+            print(f"  stderr: {result.stderr.strip()}", file=sys.stderr)
+        if result.stdout:
+            print(f"  stdout: {result.stdout.strip()[:1000]}", file=sys.stderr)
+        sys.exit(2)
+    stdout = result.stdout
+    if not stdout.strip():
+        return []
+    # bq CLI in Actions can prepend status text; find the JSON array start
+    start = stdout.find("[")
+    if start < 0:
+        return []
+    return json.loads(stdout[start:])
 
 
 @dataclass
@@ -57,6 +117,23 @@ class Routine:
     @property
     def fullname(self) -> str:
         return f"{self.schema}.{self.name}"
+
+
+@dataclass
+class TableObj:
+    """Represents a BigQuery table OR view (table_type distinguishes them)."""
+    schema: str
+    name: str
+    table_type: str  # BASE TABLE / VIEW / MATERIALIZED VIEW / EXTERNAL
+    ddl: str
+
+    @property
+    def fullname(self) -> str:
+        return f"{self.schema}.{self.name}"
+
+    @property
+    def is_view(self) -> bool:
+        return "VIEW" in self.table_type.upper()
 
 
 def load_config(path: Path) -> dict:
@@ -85,10 +162,7 @@ def get_excludes(cfg: dict) -> tuple[set[str], list[str]]:
 
 
 def query_routines(project_id: str, region: str, exclude_datasets: set[str]) -> list[Routine]:
-    """
-    Query INFORMATION_SCHEMA.ROUTINES for the given project/region.
-    Returns list of Routine.
-    """
+    """Query INFORMATION_SCHEMA.ROUTINES → list of Routine."""
     sql = f"""
     SELECT
       specific_schema AS schema,
@@ -98,26 +172,9 @@ def query_routines(project_id: str, region: str, exclude_datasets: set[str]) -> 
     FROM `region-{region}`.INFORMATION_SCHEMA.ROUTINES
     WHERE specific_catalog = '{project_id}'
     """
-
     print(f"Querying INFORMATION_SCHEMA.ROUTINES on {project_id} (region={region})...")
-    result = subprocess.run(
-        [
-            "bq",
-            "query",
-            f"--project_id={project_id}",
-            "--use_legacy_sql=false",
-            "--format=json",
-            "--max_rows=10000",
-            sql,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(f"ERROR: bq query failed:\n{result.stderr}", file=sys.stderr)
-        sys.exit(2)
+    rows = _run_bq_json(project_id, sql)
 
-    rows = json.loads(result.stdout) if result.stdout.strip() else []
     routines: list[Routine] = []
     for row in rows:
         schema = row["schema"]
@@ -125,13 +182,42 @@ def query_routines(project_id: str, region: str, exclude_datasets: set[str]) -> 
             continue
         routines.append(
             Routine(
-                schema=schema,
-                name=row["name"],
+                schema=schema, name=row["name"],
                 routine_type=row["routine_type"],
                 ddl=row["ddl"] or "",
             )
         )
     return routines
+
+
+def query_tables(project_id: str, region: str, exclude_datasets: set[str]) -> list[TableObj]:
+    """Query INFORMATION_SCHEMA.TABLES → list of TableObj (covers BASE TABLE + VIEW)."""
+    sql = f"""
+    SELECT
+      table_schema AS schema,
+      table_name AS name,
+      table_type,
+      ddl
+    FROM `region-{region}`.INFORMATION_SCHEMA.TABLES
+    WHERE table_catalog = '{project_id}'
+      AND table_type IN ('BASE TABLE', 'VIEW', 'MATERIALIZED VIEW')
+    """
+    print(f"Querying INFORMATION_SCHEMA.TABLES on {project_id} (region={region})...")
+    rows = _run_bq_json(project_id, sql)
+
+    tables: list[TableObj] = []
+    for row in rows:
+        schema = row["schema"]
+        if schema in exclude_datasets:
+            continue
+        tables.append(
+            TableObj(
+                schema=schema, name=row["name"],
+                table_type=row["table_type"],
+                ddl=row["ddl"] or "",
+            )
+        )
+    return tables
 
 
 def filter_excluded(routines: list[Routine], patterns: list[str]) -> tuple[list[Routine], list[Routine]]:
@@ -198,10 +284,36 @@ def render_file_content(routine: Routine, normalized_ddl: str, cross_refs: set[s
 
 def write_routine(routine: Routine, content: str, output_root: Path, dry_run: bool) -> Path:
     target_dir = output_root / routine.schema / "routines"
-    target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{routine.name}.sql"
     if dry_run:
-        return target
+        return target  # truly dry: no mkdir, no file write
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return target
+
+
+def render_table_file(table: TableObj, normalized_ddl: str, cross_refs: set[str]) -> str:
+    subfolder = "views" if table.is_view else "tables"
+    lines = [
+        f"-- bigquery/{table.schema}/{subfolder}/{table.name}.sql",
+        f"-- table_type: {table.table_type}",
+        "-- NOTE: Phase 1 不部署 tables/views, 此檔為文件參考用",
+    ]
+    for ref in sorted(cross_refs):
+        lines.append(f"-- cross-project: {ref}")
+    lines.append("")
+    lines.append(normalized_ddl.rstrip() + ";")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_table(table: TableObj, content: str, output_root: Path, dry_run: bool) -> Path:
+    subfolder = "views" if table.is_view else "tables"
+    target_dir = output_root / table.schema / subfolder
+    target = target_dir / f"{table.name}.sql"
+    if dry_run:
+        return target  # truly dry: no mkdir, no file write
+    target_dir.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return target
 
@@ -213,6 +325,8 @@ def main() -> int:
     parser.add_argument("--output", required=True, help="Output root, e.g. ./bigquery")
     parser.add_argument("--config", required=True, help="Path to governance.yaml")
     parser.add_argument("--dry-run", action="store_true", help="Don't write files, just print plan")
+    parser.add_argument("--include-tables", action="store_true",
+                        help="Also export table & view DDL into bigquery/{schema}/tables/ and views/ (Phase 1 reference only, not deployed)")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -245,7 +359,7 @@ def main() -> int:
             review_needed.append((path, cross_refs))
 
     action = "Would write" if args.dry_run else "Wrote"
-    print(f"{action} {len(written)} files under {args.output}/")
+    print(f"{action} {len(written)} routine files under {args.output}/")
     if review_needed:
         print()
         print(f"⚠  {len(review_needed)} routines have cross-project references — please review:")
@@ -255,9 +369,27 @@ def main() -> int:
                 print(f"     ↳ {ref}")
     if excluded:
         print()
-        print(f"Skipped (matched exclude pattern):")
+        print(f"Skipped routines (matched exclude pattern):")
         for r in excluded:
             print(f"   {r.fullname}")
+
+    # ----- Tables / Views (optional) -----
+    if args.include_tables:
+        print()
+        all_tables = query_tables(args.project, args.region, exclude_datasets)
+        print(f"Found {len(all_tables)} tables/views (after dataset exclude)")
+        table_written: list[Path] = []
+        for t in all_tables:
+            if not t.ddl:
+                continue  # external tables sometimes lack ddl
+            normalized, cross_refs = normalize_ddl(t.ddl, args.project)
+            content = render_table_file(t, normalized, cross_refs)
+            path = write_table(t, content, output_root, args.dry_run)
+            table_written.append(path)
+        base_count = sum(1 for p in table_written if "/tables/" in str(p).replace("\\", "/"))
+        view_count = len(table_written) - base_count
+        print(f"{action} {base_count} table files + {view_count} view files")
+        print(f"  (table/view DDL 預設不部署，請看 .gitignore 是否要納入 git)")
 
     return 0
 
