@@ -40,12 +40,17 @@ on:
         description: 'Ref of the platform repo'
         required: false
         type: string
-        default: 'v1.0'
+        default: 'v1.2'
       platform_repo:
         description: 'Owner/repo of the platform'
         required: false
         type: string
         default: ''
+      runs_on:
+        description: 'Runner label(s): ubuntu-latest (hosted) or self-hosted'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
     secrets:
       WIF_PROVIDER:
         required: true
@@ -58,7 +63,7 @@ on:
 
 jobs:
   drift:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     permissions:
       id-token: write
       contents: write

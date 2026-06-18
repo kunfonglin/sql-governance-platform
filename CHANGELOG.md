@@ -1,5 +1,31 @@
 # CHANGELOG — sql-governance-platform
 
+## v1.2 (2026-06-18)
+
+### Added
+- **可選 self-hosted runner 支援**：3 個 reusable workflow（`reusable-pr-validate` / `reusable-deploy` / `reusable-nightly-drift`）新增 `runs_on` input
+  - `runs-on: ubuntu-latest` → `runs-on: ${{ inputs.runs_on }}`
+  - 預設 `ubuntu-latest`（**向後相容**，不傳就跟 v1.1 行為一致）
+  - 專案要走自架 runner 時傳 `runs_on: self-hosted`
+  - 動機：公司 org 開了 **IP allow list**，GitHub 託管 runner 動態 IP 被 403 擋下；自架 runner（固定 IP 進白名單）是官方解
+
+### Changed
+- 3 個 reusable workflow 預設 `platform_ref` 統一 → `v1.2`
+
+### Breaking changes
+- **無**。純 additive：`runs_on` 不傳則行為不變
+
+### Migration guide (v1.1 → v1.2)
+1. Project repo 的 4 個 wrapper workflow `uses:` 改 `@v1.1` → `@v1.2`、`platform_ref: v1.2`
+2. 要用自架 runner 的專案：在每個 wrapper 的 `with:` 加 `runs_on: self-hosted`
+3. **前置（非平台可控，需各自處理）**：
+   - 自架 runner 機器（建議 Linux，對外固定 IP）由 **IT 加進 org IP allow list**
+   - runner 裝 `git` + `python3`（`gcloud`/`bq` 由 `setup-gcloud` action 執行時自動裝）
+   - runner 跑成服務、保持 Idle 在線（離線則 job 排隊等待）
+4. **pilot 不動**：仍釘 `@v1.1`，保留可重現性
+
+---
+
 ## v1.1 (2026-05-07)
 
 ### Added

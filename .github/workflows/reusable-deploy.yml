@@ -35,7 +35,7 @@ on:
         description: 'Ref of the platform repo to checkout'
         required: false
         type: string
-        default: 'v1.1'
+        default: 'v1.2'
       migrations_root:
         description: 'Root dir for migrations/'
         required: false
@@ -56,6 +56,11 @@ on:
         required: false
         type: string
         default: ''
+      runs_on:
+        description: 'Runner label(s): ubuntu-latest (hosted) or self-hosted'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
     secrets:
       WIF_PROVIDER:
         required: true
@@ -68,7 +73,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
