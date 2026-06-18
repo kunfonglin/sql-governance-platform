@@ -1,5 +1,27 @@
 # CHANGELOG — sql-governance-platform
 
+## v1.3 (2026-06-18)
+
+### Fixed
+- **private 平台 repo 的 checkout 認證**：3 個 reusable workflow 的「Checkout platform repo」步驟改帶 `token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}`
+  - 根因：reusable workflow 跑起來時預設 `GITHUB_TOKEN` 綁 **caller repo**，對 **private 的 `sql-governance-platform`** 沒有 contents:read → `actions/checkout` 回 `Repository not found`（fatal exit 128）
+  - 註：org「Actions access」只放行 **`uses:` 引用** reusable workflow / action，**不等於**放行 `actions/checkout` 整個 repo clone — 兩種權限
+  - pilot v1.1 不受影響（個人 sandbox 平台 repo 是 public，免 token）
+
+### Added
+- 3 個 reusable workflow 新增可選 secret `PLATFORM_READ_TOKEN`（`required: false`）
+
+### Breaking changes
+- **無**。`token` 用 `|| github.token` fallback：不傳 `PLATFORM_READ_TOKEN` 則行為與 v1.2 一致（適用 public 平台 repo）
+
+### Migration guide (v1.2 → v1.3)
+1. **建 PAT**：fine-grained PAT，僅 `sql-governance-platform` 的 **Contents: Read-only**
+2. **設 secret**：在 org（或各 project repo）設 `PLATFORM_READ_TOKEN` = 該 PAT
+3. Project repo 的 4 個 wrapper workflow：`@v1.2` → `@v1.3`、`platform_ref: v1.3`、`secrets:` 區塊加 `PLATFORM_READ_TOKEN: ${{ secrets.PLATFORM_READ_TOKEN }}`
+4. **pilot 不動**：仍釘 `@v1.1`
+
+---
+
 ## v1.2 (2026-06-18)
 
 ### Added

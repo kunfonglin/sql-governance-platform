@@ -70,6 +70,8 @@ on:
         required: false
       TG_CHAT_ID:
         required: false
+      PLATFORM_READ_TOKEN:
+        required: false
 
 jobs:
   deploy:
@@ -94,6 +96,7 @@ jobs:
           repository: ${{ inputs.platform_repo }}
           ref: ${{ inputs.platform_ref }}
           path: .platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}
 
       - name: Project-id lint (gate BEFORE deploy)
         shell: bash

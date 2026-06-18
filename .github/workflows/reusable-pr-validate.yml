@@ -42,6 +42,8 @@ on:
         required: true
       DEPLOY_SA:
         required: true
+      PLATFORM_READ_TOKEN:
+        required: false
 
 jobs:
   validate:
@@ -62,6 +64,7 @@ jobs:
           repository: ${{ inputs.platform_repo }}
           ref: ${{ inputs.platform_ref }}
           path: .platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}
 
       - name: Project-id lint (no GCP needed)
         shell: bash
