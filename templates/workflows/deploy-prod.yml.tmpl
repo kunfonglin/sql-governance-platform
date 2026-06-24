@@ -1,0 +1,23 @@
+name: deploy-prod
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    permissions:
+      id-token: write
+      contents: write
+    uses: __PLATFORM_OWNER__/sql-governance-platform/.github/workflows/reusable-deploy.yml@__PLATFORM_REF__
+    with:
+      project_id: ${{ vars.PROJECT_PROD }}
+      environment: production           # ← 觸發 GitHub Environment approval gate
+      logical_project: __PROJECT_NAME__
+      forbidden_project_ids: "${{ vars.PROJECT_PROD }} ${{ vars.PROJECT_TEST }}"
+      platform_repo: __PLATFORM_OWNER__/sql-governance-platform
+      platform_ref: __PLATFORM_REF__
+    secrets:
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      DEPLOY_SA: ${{ secrets.DEPLOY_SA }}
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

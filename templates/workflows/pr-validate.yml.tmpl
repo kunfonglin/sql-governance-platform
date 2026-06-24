@@ -1,0 +1,20 @@
+name: pr-validate
+on:
+  pull_request:
+    branches: [development, main]
+
+jobs:
+  validate:
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    uses: __PLATFORM_OWNER__/sql-governance-platform/.github/workflows/reusable-pr-validate.yml@__PLATFORM_REF__
+    with:
+      target_project: ${{ vars.PROJECT_TEST }}
+      cost_gate_max_bytes: '100000000000'    # 100 GB
+      platform_repo: __PLATFORM_OWNER__/sql-governance-platform
+      platform_ref: __PLATFORM_REF__
+    secrets:
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      DEPLOY_SA: ${{ secrets.DEPLOY_SA }}

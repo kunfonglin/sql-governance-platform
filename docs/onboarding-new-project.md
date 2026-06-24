@@ -1,6 +1,13 @@
-# 新專案 Onboarding（Phase 1, SP-only）
+# 新專案 Onboarding
 
 > 從 0 到第一次 prod deploy 約 30–60 分鐘（不含基線匯入時間）。
+>
+> **⚡ 快速路徑（推薦）**：直接跑 `templates/scaffold-new-project.ps1`，一鍵產出 repo 骨架 +
+> 4 個 workflow + governance.yaml + 已填好的 IAM 申請單。本文件是它背後每一步的詳解。
+>
+> **範圍**：routines（SP/FN）已完整支援（deploy + drift 驗過）。
+> **table / view 進部署**為 Track B（需 platform 端 `destructive-migration-lint` + `deploy-views` 上線），
+> 在那之前 table/view 可用 `exporter.py --include-tables` 匯入當基線文件、但不自動部署、drift 不掃。
 
 ## 0. 需要先準備的資訊
 
@@ -15,28 +22,36 @@
 
 ## 1. 在 GCP 建 SA + WIF
 
-```bash
-PROJECT_NAME=marketing                     # 邏輯名
-PROJECT_PROD=my-${PROJECT_NAME}-prod       # GCP project id
+> ⚠️ **此節完整步驟以 [`iam-wif-setup.md`](iam-wif-setup.md) 為準**（B 方案三 role、gcloud/UI 全套、驗證、撤銷）。
+> 若你走「申請單給 IT」：複製 `templates/IAM-REQUEST-TICKET.tmpl.md` 填好實值寄出即可，這節不用自己跑。
+>
+> 🚫 **不要用 `roles/bigquery.admin`**（舊版本文件曾誤寫）。`admin` 含**修改 IAM** 的權限——SA 憑證一旦外洩，
+> 攻擊者可自我授權接管整個 BQ。改用 B 方案三個非 admin role：
 
-# 建 deploy SA
-gcloud iam service-accounts create ${PROJECT_NAME}-deploy-sa \
-  --project=${PROJECT_PROD} \
+| Role | 為什麼 |
+|---|---|
+| `roles/bigquery.dataEditor` | 部署 SP/FN/View（CREATE OR REPLACE）、讀 INFORMATION_SCHEMA |
+| `roles/bigquery.jobUser` | 跑 query / dry-run |
+| `roles/bigquery.resourceAdmin` | drift 查 `JOBS_BY_PROJECT`（找誰改了 prod）；**不含改 IAM** |
+
+```bash
+PROJECT_NAME=marketing
+PROJECT_PROD=my-${PROJECT_NAME}-prod
+PROJECT_TEST=my-${PROJECT_NAME}-test
+SA="${PROJECT_NAME}-deploy-sa@${PROJECT_PROD}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create ${PROJECT_NAME}-deploy-sa --project=${PROJECT_PROD} \
   --display-name="SQL Governance deploy SA for ${PROJECT_NAME}"
 
-# 給 BQ admin
-gcloud projects add-iam-policy-binding ${PROJECT_PROD} \
-  --member=serviceAccount:${PROJECT_NAME}-deploy-sa@${PROJECT_PROD}.iam.gserviceaccount.com \
-  --role=roles/bigquery.admin
+# 三個 role × test + prod 兩個 project（B 方案）
+for PROJ in ${PROJECT_PROD} ${PROJECT_TEST}; do
+  for ROLE in roles/bigquery.dataEditor roles/bigquery.jobUser roles/bigquery.resourceAdmin; do
+    gcloud projects add-iam-policy-binding ${PROJ} --member="serviceAccount:${SA}" --role="${ROLE}"
+  done
+done
 
-# 同樣對 test project 設 SA（可同 SA 共用，或另開一個）
-```
-
-WIF 設定（platform 通常已建好 pool；只要為新 repo 加 attribute condition）：
-
-```bash
-gcloud iam service-accounts add-iam-policy-binding \
-  ${PROJECT_NAME}-deploy-sa@${PROJECT_PROD}.iam.gserviceaccount.com \
+# WIF：platform 通常已建好 pool；為新 repo 加 binding（OWNER = 專案 repo 所在 org）
+gcloud iam service-accounts add-iam-policy-binding ${SA} \
   --role="roles/iam.workloadIdentityUser" \
   --member="principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/attribute.repository/OWNER/sql-governance-${PROJECT_NAME}"
 ```
@@ -88,12 +103,14 @@ sed -i "s/__PLATFORM_REF__/v1.0/g" README.md
 
 ## 4. 建 4 個 thin wrapper workflows
 
-複製 `phase1/pilot/.github/workflows/*` 樣板（這 4 個檔都很短，每個 < 30 行）。
+從 `templates/workflows/*.yml.tmpl` 複製（deploy-test / deploy-prod / pr-validate / nightly-drift），
+把 `__PLATFORM_OWNER__` / `__PLATFORM_REF__` / `__PROJECT_NAME__` 換掉即可。
+`scaffold-new-project.ps1` 會自動做這步。
 
-關鍵：把 `uses:` 路徑改成正確的 platform repo 與 ref：
+關鍵：`uses:` 與 `platform_ref` 要對齊目前 platform tag（現為 `v1.1`）：
 
 ```yaml
-uses: OWNER/sql-governance-platform/.github/workflows/reusable-deploy.yml@v1.0
+uses: __PLATFORM_OWNER__/sql-governance-platform/.github/workflows/reusable-deploy.yml@v1.1
 ```
 
 ---

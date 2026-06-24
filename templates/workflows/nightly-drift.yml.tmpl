@@ -1,0 +1,23 @@
+name: nightly-drift
+on:
+  schedule:
+    - cron: '0 3 * * *'        # 每日 03:00 UTC
+  workflow_dispatch:           # 也可手動觸發
+
+jobs:
+  drift:
+    permissions:
+      id-token: write
+      contents: write
+    uses: __PLATFORM_OWNER__/sql-governance-platform/.github/workflows/reusable-nightly-drift.yml@__PLATFORM_REF__
+    with:
+      project_id: ${{ vars.PROJECT_PROD }}
+      region: ${{ vars.REGION }}
+      logical_project: __PROJECT_NAME__
+      platform_repo: __PLATFORM_OWNER__/sql-governance-platform
+      platform_ref: __PLATFORM_REF__
+    secrets:
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      DEPLOY_SA: ${{ secrets.DEPLOY_SA }}
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

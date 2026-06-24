@@ -150,10 +150,10 @@ def get_excludes(cfg: dict) -> tuple[set[str], list[str]]:
       (exclude_dataset_names, exclude_routine_patterns)
       exclude_routine_patterns format: list of glob patterns matching "{schema}.{name}"
     """
-    exclude_block = cfg.get("exclude", {})
-    datasets = set(exclude_block.get("datasets", []))
+    exclude_block = cfg.get("exclude") or {}
+    datasets = set(exclude_block.get("datasets") or [])
     routines = []
-    for entry in exclude_block.get("routines", []):
+    for entry in (exclude_block.get("routines") or []):
         if isinstance(entry, dict) and "pattern" in entry:
             routines.append(entry["pattern"])
         elif isinstance(entry, str):
