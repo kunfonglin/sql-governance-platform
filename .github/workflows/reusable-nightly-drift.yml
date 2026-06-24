@@ -36,11 +36,21 @@ on:
         required: false
         type: string
         default: '36'
+      check_views:
+        description: '也掃 views drift（DDL 比對）'
+        required: false
+        type: boolean
+        default: false
+      check_tables:
+        description: '也掃 tables drift（欄位比對，會裝 sqlglot）'
+        required: false
+        type: boolean
+        default: false
       platform_ref:
         description: 'Ref of the platform repo'
         required: false
         type: string
-        default: 'v1.2'
+        default: 'v1.4'
       platform_repo:
         description: 'Owner/repo of the platform'
         required: false
@@ -94,7 +104,12 @@ jobs:
 
       - name: Install deps
         shell: bash
-        run: pip install pyyaml
+        run: |
+          pip install pyyaml
+          # table drift 用 sqlglot 解析 git 的 tables/*.sql 抽欄位
+          if [[ "${{ inputs.check_tables }}" == "true" ]]; then
+            pip install sqlglot
+          fi
 
       - name: Auth to GCP
         uses: ./.platform/.github/actions/auth-gcp
@@ -107,6 +122,10 @@ jobs:
         shell: bash
         continue-on-error: true
         run: |
+          # 選用：views / tables drift（不傳則跟舊行為一致，只掃 routines）
+          EXTRA=""
+          [[ "${{ inputs.check_views }}"  == "true" ]] && EXTRA="$EXTRA --include-views"
+          [[ "${{ inputs.check_tables }}" == "true" ]] && EXTRA="$EXTRA --include-tables"
           # 用 &&...||... 模式捕捉 exit code，避免 set -e 在 python 失敗時讓後面那行 echo 跑不到
           python .platform/scripts/drift-detector.py \
             --project "${{ inputs.project_id }}" \
@@ -117,6 +136,7 @@ jobs:
             --known-drifts "${{ inputs.audit_dir }}/known-drifts.yaml" \
             --manifest-dir "${{ inputs.audit_dir }}/deploys" \
             --audit-lookback-hours "${{ inputs.audit_lookback_hours }}" \
+            $EXTRA \
             && EXIT=0 || EXIT=$?
           echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
           # don't fail the step here; we want commit + TG to still run

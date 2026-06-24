@@ -1,0 +1,74 @@
+name: 'Dry-run Views'
+description: 'Run bq query --dry_run on changed views (CREATE OR REPLACE VIEW) to validate before merge'
+
+inputs:
+  project_id:
+    description: 'Target GCP project for dry-run (usually test)'
+    required: true
+  bigquery_root:
+    description: 'Root directory'
+    required: false
+    default: 'bigquery'
+  base_ref:
+    description: 'Base ref to diff against'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine changed views
+      id: changed
+      shell: bash
+      run: |
+        BASE="${{ inputs.base_ref }}"
+        if [[ -z "$BASE" ]]; then
+          BASE="${{ github.event.pull_request.base.sha }}"
+        fi
+        if [[ -z "$BASE" ]]; then
+          BASE="HEAD~1"
+        fi
+
+        echo "Diffing against: $BASE"
+        CHANGED=$(git diff --name-only "$BASE"...HEAD -- "${{ inputs.bigquery_root }}/*/views/*.sql" || true)
+
+        if [[ -z "$CHANGED" ]]; then
+          echo "No view changes detected."
+          echo "files=" >> "$GITHUB_OUTPUT"
+        else
+          {
+            echo "files<<EOF"
+            echo "$CHANGED"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Dry-run each changed view
+      if: steps.changed.outputs.files != ''
+      shell: bash
+      env:
+        FILES: ${{ steps.changed.outputs.files }}
+        PROJECT: ${{ inputs.project_id }}
+      run: |
+        set -e
+        FAILED=0
+
+        while IFS= read -r f; do
+          [[ -z "$f" || ! -f "$f" ]] && continue
+          echo "▶ dry-run view: $f"
+
+          # CREATE OR REPLACE VIEW 是 DDL：dry-run 驗語法 + 被引用的 table/view 是否存在（~0 bytes）
+          OUT=$(bq query --project_id="$PROJECT" --use_legacy_sql=false --dry_run < "$f" 2>&1) || {
+            echo "❌ dry-run failed:"
+            echo "$OUT"
+            FAILED=$((FAILED+1))
+            continue
+          }
+          echo "   ✓ validated"
+        done <<< "$FILES"
+
+        echo ""
+        echo "Summary: failed = $FAILED"
+        if (( FAILED > 0 )); then
+          exit 1
+        fi

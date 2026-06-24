@@ -35,7 +35,7 @@ on:
         description: 'Ref of the platform repo to checkout'
         required: false
         type: string
-        default: 'v1.2'
+        default: 'v1.4'
       migrations_root:
         description: 'Root dir for migrations/'
         required: false
@@ -139,28 +139,41 @@ jobs:
           migrations_root: ${{ inputs.migrations_root }}
           ledger_dataset: ${{ inputs.ledger_dataset }}
 
-      - name: Patch manifest with migrations_applied
+      # View 走 state-based（CREATE OR REPLACE VIEW，非破壞）。
+      # 放在 migrations 之後：view 引用的 table 由 migration 先建好，dry-run/部署才不會因缺 table 失敗。
+      - name: Deploy views
+        id: views
+        uses: ./.platform/.github/actions/deploy-views
+        with:
+          project_id: ${{ inputs.project_id }}
+          bigquery_root: ${{ inputs.bigquery_root }}
+
+      - name: Patch manifest with migrations_applied + views
         if: success()
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
           APPLIED_JSON: ${{ steps.migrations.outputs.applied_json }}
+          VIEWS_JSON: ${{ steps.views.outputs.deployed_json }}
         run: |
           if [[ ! -f "$MANIFEST_PATH" ]]; then
             echo "Manifest not found at $MANIFEST_PATH, skipping patch"
             exit 0
           fi
-          # 用 python 把 deployed.migrations_applied 改成真實值
+          # 用 python 把 deployed.migrations_applied / deployed.views 改成真實值
           python3 - <<'PY'
           import json, os
           path = os.environ['MANIFEST_PATH']
           applied = json.loads(os.environ.get('APPLIED_JSON','[]') or '[]')
+          views = json.loads(os.environ.get('VIEWS_JSON','[]') or '[]')
           with open(path) as f:
               m = json.load(f)
-          m.setdefault('deployed', {})['migrations_applied'] = applied
+          deployed = m.setdefault('deployed', {})
+          deployed['migrations_applied'] = applied
+          deployed['views'] = views
           with open(path, 'w') as f:
               json.dump(m, f, indent=2)
-          print(f"Patched manifest: {len(applied)} migrations_applied")
+          print(f"Patched manifest: {len(applied)} migrations_applied, {len(views)} views")
           PY
 
       - name: Commit manifest

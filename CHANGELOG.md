@@ -1,5 +1,40 @@
 # CHANGELOG — sql-governance-platform
 
+## v1.4 (2026-06-23)
+
+### Added — Views 進部署 + PR 驗證
+- **新 script** `apply-views.sh`：對 `bigquery/*/views/*.sql` 跑 `CREATE OR REPLACE VIEW`，two-phase 容錯（沿用 apply-routines 模式，解 view 互相引用）
+  - View 是無資料物件 → `CREATE OR REPLACE VIEW` 非破壞，跟 SP 同性質、可全量重佈；**與 table 不同**（table 走 migration，因 `CREATE OR REPLACE` 會掉資料）
+- **新 composite action** `deploy-views`、`dry-run-views`
+- **`reusable-deploy.yml`**：在 `apply-migrations` 之後新增 **Deploy views** step（順序：routines → migrations → views，確保 view 引用的 table 已由 migration 建好）；manifest 補 `deployed.views`
+- **`reusable-pr-validate.yml`**：新增 **Dry-run changed views** step（壞掉的 view SQL 在 merge 前擋下）
+
+### Added — Drift 擴充到 views + tables
+- **`drift-detector.py`** 新增 `--include-views`：抓 `INFORMATION_SCHEMA.TABLES`（table_type='VIEW'）的 ddl，與 git `views/*.sql` 走同一套 DDL diff
+- **`drift-detector.py`** 新增 `--include-tables`：抓 `INFORMATION_SCHEMA.COLUMNS` 比 git `tables/*.sql` 的**欄位名 + 型別 + nullable**（用 sqlglot 解析；**不比整段 DDL / partition / cluster**，避免格式誤報）
+  - 抓「有人偷改資料表欄位」：drift 同時涵蓋 prod 多欄 / 缺欄 / 型別變更 / nullable 變更（NULLABLE↔NOT NULL，會影響下游資料流）
+  - ARRAY/REPEATED 欄位 BQ 一律報 NOT NULL → 兩邊強制當非 nullable，避免誤報
+  - audit-log「誰改的」查詢擴充 statement_type（CREATE/ALTER/DROP VIEW·TABLE）→ table/view drift 也能查到修改人
+  - CTAS（無明確欄位）與無法解析的 table 會略過並警告，不中斷 drift run
+- **`reusable-nightly-drift.yml`**：新增 `check_views` / `check_tables` input（**預設 false，向後相容**）；`check_tables` 時自動 `pip install sqlglot`
+- Drift report 新增 **Object** 欄（routine/view/table），diff preview 涵蓋 table 欄位變更
+
+### Changed
+- 3 個 reusable workflow 預設 `platform_ref` → `v1.4`
+- `governance.yaml.tmpl` 的 `exclude` 補 `views: []` / `tables: []`；`drift_check.scope` 補 views/tables 註解
+
+### Breaking changes
+- **無**。views 部署：沒有 `views/` 目錄則 no-op；drift 兩個新 flag 預設關。既有 routines/migrations 行為完全不變
+
+### Migration guide (v1.3 → v1.4)
+1. Project repo 的 wrapper：`@v1.3` → `@v1.4`、`platform_ref: v1.4`
+2. （選用）要開 view/table drift：在 `nightly-drift` wrapper 的 `with:` 加 `check_views: true` / `check_tables: true`
+3. View 開發：放 `bigquery/{dataset}/views/{view}.sql`，內容 `CREATE OR REPLACE VIEW`（不含 project id，照 routines 同規範）
+4. Table 結構快照放 `bigquery/{dataset}/tables/{table}.sql`（drift 比對基準），實際變更走 `migrations/`（不變）
+5. **pilot 不動**：仍釘 `@v1.1`
+
+---
+
 ## v1.3 (2026-06-18)
 
 ### Fixed

@@ -80,8 +80,9 @@ class GitRoutine:
 
 @dataclass
 class Drift:
-    kind: str  # "orphan" | "not_deployed" | "content"
+    kind: str  # routines/views: "orphan"|"not_deployed"|"content"; tables: "table_orphan"|"table_not_deployed"|"columns"
     fullname: str
+    object_type: str = "routine"  # "routine" | "view" | "table"
     detail: str = ""
     last_modifier: str | None = None
     last_modified_at: str | None = None
@@ -183,10 +184,15 @@ def fetch_recent_modifiers(project: str, region: str, hours: int) -> dict[str, d
         user_email,
         creation_time,
         statement_type,
-        REGEXP_EXTRACT(query, r'(?i)CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:PROCEDURE|FUNCTION|TABLE\\s+FUNCTION)\\s+`?(?:[\\w-]+\\.)?([\\w-]+\\.[\\w-]+)`?') AS routine_fullname
+        REGEXP_EXTRACT(query, r'(?i)(?:CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:MATERIALIZED\\s+VIEW|VIEW|TABLE\\s+FUNCTION|TABLE|PROCEDURE|FUNCTION)|ALTER\\s+TABLE|DROP\\s+(?:MATERIALIZED\\s+VIEW|VIEW|TABLE|PROCEDURE|FUNCTION))\\s+(?:IF\\s+(?:NOT\\s+)?EXISTS\\s+)?`?(?:[\\w-]+\\.)?([\\w-]+\\.[\\w-]+)`?') AS routine_fullname
       FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
       WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {hours} HOUR)
-        AND statement_type IN ('CREATE_PROCEDURE', 'CREATE_FUNCTION', 'CREATE_TABLE_FUNCTION', 'DROP_PROCEDURE', 'DROP_FUNCTION', 'SCRIPT')
+        AND statement_type IN (
+          'CREATE_PROCEDURE', 'CREATE_FUNCTION', 'CREATE_TABLE_FUNCTION',
+          'DROP_PROCEDURE', 'DROP_FUNCTION',
+          'CREATE_VIEW', 'CREATE_MATERIALIZED_VIEW', 'DROP_VIEW',
+          'CREATE_TABLE', 'CREATE_TABLE_AS_SELECT', 'ALTER_TABLE', 'DROP_TABLE',
+          'SCRIPT')
         AND state = 'DONE'
     )
     SELECT routine_fullname, user_email, CAST(creation_time AS STRING) AS creation_time
@@ -325,7 +331,12 @@ def compute_drift(
     live: list[LiveRoutine],
     git: list[GitRoutine],
     project: str,
+    object_type: str = "routine",
 ) -> list[Drift]:
+    """
+    DDL-based drift（routines 與 views 共用）：兩者都是「無資料、可全量重佈」物件，
+    比的就是規範化後的 DDL 文字。table 的 drift 走 compute_table_drift（比欄位、不比 DDL）。
+    """
     by_name_live = {r.fullname: r for r in live}
     by_name_git = {r.fullname: r for r in git}
 
@@ -336,7 +347,8 @@ def compute_drift(
         drifts.append(Drift(
             kind="orphan",
             fullname=fullname,
-            detail="prod 有此 routine 但 git 沒有對應檔案",
+            object_type=object_type,
+            detail=f"prod 有此 {object_type} 但 git 沒有對應檔案",
         ))
 
     # not deployed: in git but not live
@@ -344,7 +356,8 @@ def compute_drift(
         drifts.append(Drift(
             kind="not_deployed",
             fullname=fullname,
-            detail="git 有此 routine 但 prod 沒有",
+            object_type=object_type,
+            detail=f"git 有此 {object_type} 但 prod 沒有",
         ))
 
     # content drift
@@ -365,10 +378,219 @@ def compute_drift(
             drifts.append(Drift(
                 kind="content",
                 fullname=fullname,
+                object_type=object_type,
                 detail="內容不一致",
                 diff_preview=preview,
             ))
 
+    return drifts
+
+
+# ---------- Views (DDL-based, 與 routines 同一套) ----------
+
+def fetch_live_views(project: str, region: str, exclude_datasets: set[str]) -> list[LiveRoutine]:
+    """
+    抓 live views。用 INFORMATION_SCHEMA.TABLES 的 ddl 欄（內含完整 CREATE VIEW 語句），
+    這樣能跟 git 的 views/*.sql（CREATE OR REPLACE VIEW ... AS SELECT ...）走同一套 normalize/diff。
+    """
+    sql = f"""
+    SELECT table_schema AS schema, table_name AS name, ddl,
+           CAST(NULL AS STRING) AS last_altered
+    FROM `region-{region}`.INFORMATION_SCHEMA.TABLES
+    WHERE table_catalog = '{project}' AND table_type = 'VIEW'
+    """
+    result = subprocess.run(
+        ["bq", "--quiet", "query", f"--project_id={project}", "--use_legacy_sql=false",
+         "--format=json", "--max_rows=10000", sql],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"ERROR: bq view query failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(2)
+    rows = _parse_bq_json(result.stdout)
+    out: list[LiveRoutine] = []
+    for r in rows:
+        if r["schema"] in exclude_datasets:
+            continue
+        out.append(LiveRoutine(schema=r["schema"], name=r["name"], ddl=r["ddl"] or ""))
+    return out
+
+
+def load_git_views(git_root: Path) -> list[GitRoutine]:
+    """Walk git_root looking for {schema}/views/{name}.sql"""
+    out: list[GitRoutine] = []
+    if not git_root.exists():
+        return out
+    for sql_path in git_root.glob("*/views/*.sql"):
+        out.append(GitRoutine(
+            schema=sql_path.parent.parent.name,
+            name=sql_path.stem,
+            ddl=sql_path.read_text(encoding="utf-8"),
+            path=sql_path,
+        ))
+    return out
+
+
+# ---------- Tables (column-based, 不比整段 DDL) ----------
+
+def _is_nullable(type_norm: str, nullable_flag: bool) -> bool:
+    # ARRAY/REPEATED 欄位 BQ 一律報 NOT NULL，但 git DDL 不會寫 NOT NULL →
+    # 強制兩邊都當「非 nullable」，避免 ARRAY 欄位每次誤報。
+    if type_norm.startswith("ARRAY"):
+        return False
+    return nullable_flag
+
+
+def fetch_live_table_columns(
+    project: str, region: str, exclude_datasets: set[str],
+) -> dict[str, list[tuple[str, str, bool]]]:
+    """
+    回傳 {schema.table: [(column_name, normalized_type, nullable), ...]}（依 ordinal_position 排序）。
+    只看 BASE TABLE（排除 view / external / snapshot）。
+    """
+    sql = f"""
+    SELECT c.table_schema AS schema, c.table_name AS name,
+           c.column_name AS column_name, c.data_type AS data_type,
+           c.is_nullable AS is_nullable,
+           c.ordinal_position AS ordinal_position
+    FROM `region-{region}`.INFORMATION_SCHEMA.COLUMNS AS c
+    JOIN `region-{region}`.INFORMATION_SCHEMA.TABLES AS t
+      ON c.table_schema = t.table_schema AND c.table_name = t.table_name
+    WHERE c.table_catalog = '{project}' AND t.table_type = 'BASE TABLE'
+    ORDER BY c.table_schema, c.table_name, c.ordinal_position
+    """
+    result = subprocess.run(
+        ["bq", "--quiet", "query", f"--project_id={project}", "--use_legacy_sql=false",
+         "--format=json", "--max_rows=100000", sql],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"ERROR: bq column query failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(2)
+    rows = _parse_bq_json(result.stdout)
+    out: dict[str, list[tuple[str, str, bool]]] = {}
+    for r in rows:
+        if r["schema"] in exclude_datasets:
+            continue
+        # 跳過 ingestion-time 分區的 pseudo column（git DDL 不會有，否則誤報）
+        if r["column_name"].upper().startswith("_PARTITION"):
+            continue
+        fullname = f"{r['schema']}.{r['name']}"
+        ctype = _normalize_bq_type(r["data_type"])
+        nullable = _is_nullable(ctype, str(r.get("is_nullable", "YES")).upper() == "YES")
+        out.setdefault(fullname, []).append((r["column_name"], ctype, nullable))
+    return out
+
+
+# BQ 型別別名 → 標準名，避免 git DDL 與 INFORMATION_SCHEMA 寫法不同造成誤報
+_TYPE_ALIASES = {
+    "INT": "INT64", "INTEGER": "INT64", "SMALLINT": "INT64", "BIGINT": "INT64",
+    "TINYINT": "INT64", "BYTEINT": "INT64",
+    "FLOAT": "FLOAT64", "DOUBLE": "FLOAT64",
+    "DECIMAL": "NUMERIC", "BIGDECIMAL": "BIGNUMERIC",
+    "BOOL": "BOOLEAN",
+}
+
+
+def _normalize_bq_type(t: str) -> str:
+    if not t:
+        return ""
+    s = re.sub(r"\s+", "", t).upper()
+    # 只對「頂層純量型別」做別名（ARRAY<>/STRUCT<> 內部不動，保持原樣比對）
+    return _TYPE_ALIASES.get(s, s)
+
+
+def load_git_table_columns(git_root: Path) -> dict[str, list[tuple[str, str, bool]]]:
+    """
+    用 sqlglot 解析 git 的 {schema}/tables/{name}.sql，抽出 (column_name, normalized_type, nullable)。
+    nullable = 沒寫 NOT NULL（ARRAY 一律當非 nullable，對齊 BQ）。
+    CTAS（CREATE TABLE AS SELECT，無明確欄位定義）無法靜態取得欄位 → 略過並警告。
+    """
+    out: dict[str, list[tuple[str, str, bool]]] = {}
+    if not git_root.exists():
+        return out
+
+    try:
+        import sqlglot
+        from sqlglot import exp
+    except ImportError:
+        print("ERROR: --include-tables 需要 sqlglot。請 pip install sqlglot", file=sys.stderr)
+        sys.exit(1)
+
+    for sql_path in git_root.glob("*/tables/*.sql"):
+        schema = sql_path.parent.parent.name
+        name = sql_path.stem
+        fullname = f"{schema}.{name}"
+        text = sql_path.read_text(encoding="utf-8")
+        try:
+            parsed = sqlglot.parse_one(text, read="bigquery")
+        except Exception as e:  # noqa: BLE001 — 解析失敗不該炸掉整個 drift run
+            print(f"WARN: 無法解析 {sql_path}（略過）: {e}", file=sys.stderr)
+            continue
+        if parsed is None:
+            continue
+        cols: list[tuple[str, str, bool]] = []
+        for col in parsed.find_all(exp.ColumnDef):
+            kind = col.args.get("kind")
+            ctype = _normalize_bq_type(kind.sql(dialect="bigquery") if kind is not None else "")
+            constraints = col.args.get("constraints", []) or []
+            not_null = any(isinstance(c.args.get("kind"), exp.NotNullColumnConstraint) for c in constraints)
+            cols.append((col.name, ctype, _is_nullable(ctype, not not_null)))
+        if not cols:
+            print(f"WARN: {sql_path} 找不到欄位定義（可能是 CTAS），column-drift 略過此表", file=sys.stderr)
+            continue
+        out[fullname] = cols
+    return out
+
+
+def compute_table_drift(
+    live: dict[str, list[tuple[str, str, bool]]],
+    git: dict[str, list[tuple[str, str, bool]]],
+) -> list[Drift]:
+    """
+    比欄位（名稱 + 型別 + nullable），不比整段 DDL（partition/cluster/OPTIONS 格式差異會誤報）。
+    回報：表級 orphan / not_deployed；欄位級 新增 / 刪除 / 型別變更 / nullable 變更。
+    """
+    drifts: list[Drift] = []
+
+    for fullname in sorted(set(live) - set(git)):
+        drifts.append(Drift(
+            kind="table_orphan", fullname=fullname, object_type="table",
+            detail="prod 有此 table 但 git 沒有對應 tables/*.sql",
+        ))
+    for fullname in sorted(set(git) - set(live)):
+        drifts.append(Drift(
+            kind="table_not_deployed", fullname=fullname, object_type="table",
+            detail="git 有此 table 但 prod 沒有",
+        ))
+
+    def _null_label(nullable: bool) -> str:
+        return "NULLABLE" if nullable else "NOT NULL"
+
+    for fullname in sorted(set(live) & set(git)):
+        live_cols = {c[0]: (c[1], c[2]) for c in live[fullname]}   # name -> (type, nullable)
+        git_cols = {c[0]: (c[1], c[2]) for c in git[fullname]}
+        changes: list[str] = []
+        # 有人在 prod 多加的欄位（git 沒有）
+        for c in sorted(set(live_cols) - set(git_cols)):
+            changes.append(f"+ live 多了欄位 `{c}` {live_cols[c][0]}（git 無）")
+        # git 有但 prod 沒有 → 尚未部署 / 被人刪掉
+        for c in sorted(set(git_cols) - set(live_cols)):
+            changes.append(f"- live 缺欄位 `{c}` {git_cols[c][0]}（git 有）")
+        # 型別 / nullable 變更
+        for c in sorted(set(live_cols) & set(git_cols)):
+            gtype, gnull = git_cols[c]
+            ltype, lnull = live_cols[c]
+            if gtype != ltype:
+                changes.append(f"~ 欄位 `{c}` 型別 git={gtype} → live={ltype}")
+            if gnull != lnull:
+                changes.append(f"~ 欄位 `{c}` 可空性 git={_null_label(gnull)} → live={_null_label(lnull)}")
+        if changes:
+            drifts.append(Drift(
+                kind="columns", fullname=fullname, object_type="table",
+                detail="欄位與 git 快照不一致",
+                diff_preview="\n".join(changes),
+            ))
     return drifts
 
 
@@ -418,22 +640,22 @@ def render_report(report: Report) -> str:
         lines += [
             f"⚠ **{len(report.drifts)} drift(s) detected.**",
             "",
-            "| Kind | Routine | Last Modifier | Last Modified | In Manifest? | Detail |",
-            "|------|---------|---------------|---------------|--------------|--------|",
+            "| Object | Kind | Name | Last Modifier | Last Modified | In Manifest? | Detail |",
+            "|--------|------|------|---------------|---------------|--------------|--------|",
         ]
         for d in report.drifts:
             lines.append(
-                f"| {d.kind} | `{d.fullname}` | {d.last_modifier or '-'} | "
+                f"| {d.object_type} | {d.kind} | `{d.fullname}` | {d.last_modifier or '-'} | "
                 f"{d.last_modified_at or '-'} | {'yes' if d.in_recent_manifest else 'no'} | {d.detail} |"
             )
         lines.append("")
 
-        # diff previews (for content drifts)
-        content_drifts = [d for d in report.drifts if d.kind == "content" and d.diff_preview]
-        if content_drifts:
-            lines += ["## Content diff previews", ""]
-            for d in content_drifts:
-                lines += [f"### `{d.fullname}`", "```diff", d.diff_preview, "```", ""]
+        # diff previews（routine/view 的內容 diff + table 的欄位變更）
+        preview_drifts = [d for d in report.drifts if d.diff_preview]
+        if preview_drifts:
+            lines += ["## Diff previews", ""]
+            for d in preview_drifts:
+                lines += [f"### [{d.object_type}] `{d.fullname}`", "```diff", d.diff_preview, "```", ""]
 
     if report.known_drifts_filtered:
         lines += [
@@ -459,6 +681,10 @@ def main() -> int:
     parser.add_argument("--known-drifts", default=None, help="path to known-drifts.yaml")
     parser.add_argument("--manifest-dir", default=None, help="path to audit/deploys/")
     parser.add_argument("--audit-lookback-hours", type=int, default=24)
+    parser.add_argument("--include-views", action="store_true",
+                        help="也比對 views（DDL，跟 routines 同一套）")
+    parser.add_argument("--include-tables", action="store_true",
+                        help="也比對 tables（比欄位名+型別，需 sqlglot）")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -476,6 +702,22 @@ def main() -> int:
 
     print(f"Computing drift...")
     drifts = compute_drift(live, git_routines, args.project)
+
+    # views（DDL-based，與 routines 同一套）
+    if args.include_views:
+        print(f"Fetching live views from {args.project}...")
+        live_views = fetch_live_views(args.project, args.region, exclude_datasets)
+        git_views = load_git_views(Path(args.git_root))
+        print(f"  live views={len(live_views)}, git views={len(git_views)}")
+        drifts += compute_drift(live_views, git_views, args.project, object_type="view")
+
+    # tables（column-based，不比整段 DDL）
+    if args.include_tables:
+        print(f"Fetching live table columns from {args.project}...")
+        live_cols = fetch_live_table_columns(args.project, args.region, exclude_datasets)
+        git_cols = load_git_table_columns(Path(args.git_root))
+        print(f"  live tables={len(live_cols)}, git tables={len(git_cols)}")
+        drifts += compute_table_drift(live_cols, git_cols)
 
     # filter by known drifts
     filtered_names: list[str] = []

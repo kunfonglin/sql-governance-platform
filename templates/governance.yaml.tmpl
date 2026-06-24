@@ -12,23 +12,28 @@ environments:
   prod:
     project_id: __PROJECT_PROD__          # e.g. sandbox-prod
 
-# 共用 exclude 命名空間（未來會加 tables / views，先預留結構）
+# 共用 exclude 命名空間（dataset 級 exclude 同時作用於 routines / views / tables drift）
 exclude:
   datasets:
     - staging_temp
     - _dataform_staging
     - _script_scratch
-  routines:
-    # 每筆 entry: pattern + reason + review_by + owner
+  routines: []
+    # 每筆 entry: pattern + reason + review_by + owner（要加時把上面 [] 移除）
     # - pattern: "*.sp_migrate_sqlserver_*"
     #   reason: "SQL Server 遷移歷史搬移工具，待評估保留或刪除"
     #   review_by: "2026-09-30"
     #   owner: "lin"
+  views: []     # v1.4+：保留結構；目前 view drift 走 dataset 級 exclude
+  tables: []    # v1.4+：保留結構；目前 table drift 走 dataset 級 exclude
 
 drift_check:
   schedule: "0 3 * * *"
+  # scope 為意圖宣告；實際開關由 caller 的 nightly-drift wrapper 傳 check_views / check_tables（v1.4+）
   scope:
     - routines
+    # - views     # 需平台 >= v1.4，且 wrapper 傳 check_views: true
+    # - tables    # 需平台 >= v1.4，且 wrapper 傳 check_tables: true
   notify: telegram
   ignore_known: true
 
@@ -37,5 +42,5 @@ cost_gate:
 
 # 平台版本鎖定（變更時走小範圍升級流程）
 platform:
-  ref: v1.0
+  ref: __PLATFORM_REF__
   repo: __PLATFORM_OWNER__/sql-governance-platform

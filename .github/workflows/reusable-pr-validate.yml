@@ -26,7 +26,7 @@ on:
         description: 'Ref of the platform repo to checkout'
         required: false
         type: string
-        default: 'v1.2'
+        default: 'v1.4'
       platform_repo:
         description: 'Owner/repo of the platform'
         required: false
@@ -83,4 +83,10 @@ jobs:
         with:
           project_id: ${{ inputs.target_project }}
           cost_gate_max_bytes: ${{ inputs.cost_gate_max_bytes }}
+          bigquery_root: ${{ inputs.bigquery_root }}
+
+      - name: Dry-run changed views
+        uses: ./.platform/.github/actions/dry-run-views
+        with:
+          project_id: ${{ inputs.target_project }}
           bigquery_root: ${{ inputs.bigquery_root }}

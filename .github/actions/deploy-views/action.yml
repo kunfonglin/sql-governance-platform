@@ -1,0 +1,49 @@
+name: 'Deploy Views'
+description: 'Apply CREATE OR REPLACE VIEW for all bigquery/*/views/*.sql (two-phase, dependency-tolerant)'
+
+inputs:
+  project_id:
+    description: 'Target GCP project ID'
+    required: true
+  bigquery_root:
+    description: 'Root directory of bigquery/ in the project repo'
+    required: false
+    default: 'bigquery'
+  out_json:
+    description: 'Where apply-views.sh writes the deployed-view list (JSON array)'
+    required: false
+    default: '/tmp/views_deployed.json'
+
+outputs:
+  deployed_json:
+    description: 'JSON array of view file paths deployed this run'
+    value: ${{ steps.apply.outputs.deployed_json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run apply-views.sh
+      id: apply
+      shell: bash
+      env:
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+      run: |
+        SCRIPT="${GITHUB_ACTION_PATH}/../../../scripts/apply-views.sh"
+        chmod +x "$SCRIPT"
+
+        "$SCRIPT" \
+          --project "${{ inputs.project_id }}" \
+          --root    "${{ inputs.bigquery_root }}" \
+          --out-json "${{ inputs.out_json }}"
+
+        # 把已部署清單傳成 step output（給 manifest patch 合併用）
+        if [[ -f "${{ inputs.out_json }}" ]]; then
+          {
+            echo "deployed_json<<EOF"
+            cat "${{ inputs.out_json }}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        else
+          echo 'deployed_json=[]' >> "$GITHUB_OUTPUT"
+        fi
