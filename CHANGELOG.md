@@ -1,5 +1,26 @@
 # CHANGELOG — sql-governance-platform
 
+## v1.5 (2026-06-25)
+
+### Changed — 部署順序修正（依相依關係）
+- **`reusable-deploy.yml` 部署順序 `routines → migrations → views` 改為 `migrations → routines → views`**
+  - 根因：`CREATE OR REPLACE PROCEDURE` 預設 `strict_mode` 會驗證 SP body；當 SP 引用「同一 release 新建」的表時，舊順序 SP 先於表部署 → `Not found` 失敗（pr-validate dry-run 與 prod/clean 環境首次部署都會踩到）
+  - 新順序符合相依鏈：**表(migrations) → routines(SP/UDF) → views**，SP 在引用的表已存在後才建立，**保留 strict 驗證**（不需 `strict_mode=false`）
+  - manifest 仍由 deploy-routines 產出、之後 patch（migrations 的 `applied_json` 為 step output，重排不影響）
+
+### Breaking changes
+- **無**。單一 deploy job 內 step 重排，input/secret 介面不變。
+
+### Migration guide (v1.4 → v1.5)
+1. project repo wrapper：`@v1.4` → `@v1.5`、`platform_ref: v1.5`
+2. **pilot 不動**（仍 `@v1.1`）
+
+### 已知限制（本次不修，列 backlog）
+- **pr-validate 仍唯讀、不建表** → 「同一 PR 新增 table + 新 SP 引用該 table」時，SP dry-run 仍會因表尚未建而紅。規避＝先在 test 開發建表（dev-on-test）再發 PR。
+- 正式把關強化（含手寫 migration 的 project-id-lint / destructive-lint / migration dry-run）見 self-authored gating P1-P4，另排 backlog。
+
+---
+
 ## v1.4 (2026-06-23)
 
 ### Added — Views 進部署 + PR 驗證

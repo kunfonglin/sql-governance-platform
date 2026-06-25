@@ -35,7 +35,7 @@ on:
         description: 'Ref of the platform repo to checkout'
         required: false
         type: string
-        default: 'v1.4'
+        default: 'v1.5'
       migrations_root:
         description: 'Root dir for migrations/'
         required: false
@@ -120,6 +120,17 @@ jobs:
           mkdir -p "${{ inputs.manifest_dir }}"
           echo "path=$PATH_OUT" >> "$GITHUB_OUTPUT"
 
+      # v1.5：相依順序 = 表(migrations) → routines(SP/UDF) → views。
+      # migrations 先跑把表建好，routines 的 CREATE OR REPLACE PROCEDURE 才能在 strict 驗證下
+      # 引用到已存在的表（否則 SP 在表之前部署會 Not found）。
+      - name: Apply migrations
+        id: migrations
+        uses: ./.platform/.github/actions/apply-migrations
+        with:
+          project_id: ${{ inputs.project_id }}
+          migrations_root: ${{ inputs.migrations_root }}
+          ledger_dataset: ${{ inputs.ledger_dataset }}
+
       - name: Deploy routines + write manifest
         uses: ./.platform/.github/actions/deploy-routines
         with:
@@ -130,14 +141,6 @@ jobs:
           platform_version: ${{ inputs.platform_ref }}
           pr_url: ${{ inputs.pr_url }}
           approved_by: ${{ github.actor }}
-
-      - name: Apply migrations
-        id: migrations
-        uses: ./.platform/.github/actions/apply-migrations
-        with:
-          project_id: ${{ inputs.project_id }}
-          migrations_root: ${{ inputs.migrations_root }}
-          ledger_dataset: ${{ inputs.ledger_dataset }}
 
       # View 走 state-based（CREATE OR REPLACE VIEW，非破壞）。
       # 放在 migrations 之後：view 引用的 table 由 migration 先建好，dry-run/部署才不會因缺 table 失敗。

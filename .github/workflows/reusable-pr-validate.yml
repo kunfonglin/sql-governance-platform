@@ -26,7 +26,7 @@ on:
         description: 'Ref of the platform repo to checkout'
         required: false
         type: string
-        default: 'v1.4'
+        default: 'v1.5'
       platform_repo:
         description: 'Owner/repo of the platform'
         required: false
