@@ -26,6 +26,9 @@ def main() -> int:
         print("usage: project-id-lint.py <bigquery_root> [forbidden_id ...]", file=sys.stderr)
         return 2
     root = Path(sys.argv[1])
+    if not root.exists():
+        print(f"project-id lint: 無 {root}/ 目錄，略過")
+        return 0
     forbidden = [x for x in sys.argv[2:] if x.strip()]
     if not forbidden:
         print("project-id lint: 未提供 forbidden project id，略過")

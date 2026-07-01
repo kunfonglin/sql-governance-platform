@@ -69,8 +69,11 @@ jobs:
       - name: Project-id lint (no GCP needed)
         shell: bash
         run: |
-          python3 .platform/scripts/project-id-lint.py \
-            "${{ inputs.bigquery_root }}" ${{ inputs.forbidden_project_ids }}
+          # v1.6：掃 bigquery_root（routines/tables/views）+ migrations/
+          for lint_root in "${{ inputs.bigquery_root }}" migrations; do
+            python3 .platform/scripts/project-id-lint.py \
+              "$lint_root" ${{ inputs.forbidden_project_ids }}
+          done
 
       - name: Auth to GCP
         uses: ./.platform/.github/actions/auth-gcp

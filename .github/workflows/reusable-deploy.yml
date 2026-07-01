@@ -102,8 +102,11 @@ jobs:
         shell: bash
         run: |
           # 擋「硬寫自家 project id」——即使是直接 push（沒走 PR）也會在這裡被擋下、不會部署
-          python3 .platform/scripts/project-id-lint.py \
-            "${{ inputs.bigquery_root }}" ${{ inputs.forbidden_project_ids }}
+          # v1.6：掃 bigquery_root（routines/tables/views）+ migrations/（migration 也要擋硬寫 id）
+          for lint_root in "${{ inputs.bigquery_root }}" migrations; do
+            python3 .platform/scripts/project-id-lint.py \
+              "$lint_root" ${{ inputs.forbidden_project_ids }}
+          done
 
       - name: Auth to GCP
         uses: ./.platform/.github/actions/auth-gcp

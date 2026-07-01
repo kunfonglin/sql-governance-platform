@@ -78,6 +78,41 @@ def _bq_path() -> str:
     raise FileNotFoundError("bq CLI not found. Install Google Cloud SDK or add bin/ to PATH.")
 
 
+_JSON_HEX = set("0123456789abcdefABCDEF")
+_JSON_SIMPLE_ESCAPES = set('"\\/bfnrt')
+
+
+def _repair_lone_backslashes(s: str) -> str:
+    """
+    Repair invalid JSON produced by bq CLI when DDL contains un-escaped
+    backslashes (e.g. regex literals like r'\\d+').
+
+    Scans char by char: a backslash that begins a VALID JSON escape sequence
+    (\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, or \\uXXXX with 4 hex digits) is
+    consumed whole and left intact — so already-correct escapes are never
+    touched. Any other backslash is "lone" and gets doubled to \\\\.
+    """
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        nxt = s[i + 1] if i + 1 < n else ""
+        if nxt == "u" and i + 6 <= n and all(ch in _JSON_HEX for ch in s[i + 2:i + 6]):
+            out.append(s[i:i + 6])  # valid \uXXXX
+            i += 6
+        elif nxt in _JSON_SIMPLE_ESCAPES:
+            out.append(s[i:i + 2])  # valid simple escape (incl. \\)
+            i += 2
+        else:
+            out.append("\\\\")      # lone backslash → escape it
+            i += 1
+    return "".join(out)
+
+
 def _run_bq_json(project_id: str, sql: str) -> list[dict]:
     """Run a bq query and parse JSON output. Handles Windows .cmd quirks (multi-line SQL, errors on stdout)."""
     sql_single_line = " ".join(sql.split())
@@ -104,7 +139,15 @@ def _run_bq_json(project_id: str, sql: str) -> list[dict]:
     start = stdout.find("[")
     if start < 0:
         return []
-    return json.loads(stdout[start:])
+    payload = stdout[start:]
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        # bq CLI sometimes emits DDL containing un-escaped backslashes
+        # (e.g. regex literals like r'\d+'), producing invalid JSON. Repair
+        # ONLY the lone backslashes; already-valid escape sequences (incl.
+        # \\ and \uXXXX) are consumed whole so we never corrupt them.
+        return json.loads(_repair_lone_backslashes(payload))
 
 
 @dataclass

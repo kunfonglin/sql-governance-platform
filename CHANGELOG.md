@@ -1,5 +1,23 @@
 # CHANGELOG — sql-governance-platform
 
+## v1.6 (2026-07-01)
+
+### Changed — project-id-lint 擴到 migrations/ + exporter 反斜線修補
+- **`reusable-deploy.yml` / `reusable-pr-validate.yml`**：project-id-lint 除了 `bigquery_root`，現在也掃 `migrations/`（migration 硬寫自家 project id 也會被擋）。
+- **`scripts/project-id-lint.py`**：加「路徑不存在則略過」防護（掃 migrations/ 缺目錄時不崩）。
+- **`scripts/exporter.py`**：修 bq CLI 對含反斜線 DDL（regex）輸出不合法 JSON 導致匯出崩潰的 bug（`_repair_lone_backslashes` 逐字掃描，只在嚴格解析失敗時啟動）。
+
+### Breaking changes
+- **無**。input/secret 介面不變；lint 多掃一個目錄，行為向後相容。
+
+### Migration guide (v1.5 → v1.6)
+1. project repo wrapper：`@v1.5` → `@v1.6`、`platform_ref: v1.6`
+2. pilot 不動
+
+### 決策紀錄（2026-07-01）
+- **destructive-lint 不接線**：操作者評估效益有限、增開發者困擾；破壞型改靠 time-travel（2–7 天）+ prod approval gate 人工核實 +「誰觸發誰負責」。
+- **bq-deploy adapter 退役**：新版同事 `bq-schema-change` skill 直接寫最終格式（剝 id + 冪等 + 分流）進 repo，adapter 的格式正規化已多餘。
+
 ## v1.5 (2026-06-25)
 
 ### Changed — 部署順序修正（依相依關係）
