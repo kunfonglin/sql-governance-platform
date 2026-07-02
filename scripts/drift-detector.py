@@ -699,6 +699,8 @@ def main() -> int:
     print(f"Loading git routines from {args.git_root}...")
     git_routines = load_git_routines(Path(args.git_root))
     git_routines = [r for r in git_routines if not any(fnmatch(r.fullname, p) for p in exclude_routine_patterns)]
+    # 對稱套 dataset exclude：git 側也濾（否則排除「git 有追蹤」的 dataset 會誤報一堆 not_deployed）
+    git_routines = [r for r in git_routines if r.schema not in exclude_datasets]
 
     print(f"Computing drift...")
     drifts = compute_drift(live, git_routines, args.project)
@@ -708,6 +710,7 @@ def main() -> int:
         print(f"Fetching live views from {args.project}...")
         live_views = fetch_live_views(args.project, args.region, exclude_datasets)
         git_views = load_git_views(Path(args.git_root))
+        git_views = [r for r in git_views if r.schema not in exclude_datasets]
         print(f"  live views={len(live_views)}, git views={len(git_views)}")
         drifts += compute_drift(live_views, git_views, args.project, object_type="view")
 
@@ -716,6 +719,7 @@ def main() -> int:
         print(f"Fetching live table columns from {args.project}...")
         live_cols = fetch_live_table_columns(args.project, args.region, exclude_datasets)
         git_cols = load_git_table_columns(Path(args.git_root))
+        git_cols = {k: v for k, v in git_cols.items() if k.split(".", 1)[0] not in exclude_datasets}
         print(f"  live tables={len(live_cols)}, git tables={len(git_cols)}")
         drifts += compute_table_drift(live_cols, git_cols)
 

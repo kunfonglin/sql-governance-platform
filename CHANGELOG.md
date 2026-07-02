@@ -2,10 +2,11 @@
 
 ## v1.6 (2026-07-01)
 
-### Changed — project-id-lint 擴到 migrations/ + exporter 反斜線修補
+### Changed — project-id-lint 擴到 migrations/ + exporter 反斜線修補 + drift 對稱 exclude
 - **`reusable-deploy.yml` / `reusable-pr-validate.yml`**：project-id-lint 除了 `bigquery_root`，現在也掃 `migrations/`（migration 硬寫自家 project id 也會被擋）。
 - **`scripts/project-id-lint.py`**：加「路徑不存在則略過」防護（掃 migrations/ 缺目錄時不崩）。
 - **`scripts/exporter.py`**：修 bq CLI 對含反斜線 DDL（regex）輸出不合法 JSON 導致匯出崩潰的 bug（`_repair_lone_backslashes` 逐字掃描，只在嚴格解析失敗時啟動）。
+- **`scripts/drift-detector.py`**：修**單邊 exclude bug**——`exclude.datasets` 原本只套在 live（prod）側、git 側沒濾 → 排除「git 也有追蹤」的 dataset 時，該 dataset 的 git 檔全變假 `not_deployed`（也 orphan/content 不對稱）。改成 **git 側也套 dataset exclude**（routines/views/tables 三處對稱）。
 
 ### Breaking changes
 - **無**。input/secret 介面不變；lint 多掃一個目錄，行為向後相容。
